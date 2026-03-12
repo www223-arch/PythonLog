@@ -67,9 +67,12 @@ class MainWindow(QMainWindow):
         
         self.host_edit = QLineEdit("0.0.0.0")
         self.port_edit = QLineEdit("8888")
+        self.header_edit = QLineEdit("DATA")
+        self.header_edit.setPlaceholderText("数据校验头")
         
         udp_layout.addRow("主机地址:", self.host_edit)
         udp_layout.addRow("端口:", self.port_edit)
+        udp_layout.addRow("数据校验头:", self.header_edit)
         
         self.connect_btn = QPushButton("连接")
         self.connect_btn.clicked.connect(self.connect_udp)
@@ -172,6 +175,10 @@ class MainWindow(QMainWindow):
         try:
             host = self.host_edit.text()
             port = int(self.port_edit.text())
+            header = self.header_edit.text().strip() or 'DATA'
+            
+            # 设置数据校验头
+            self.data_source_manager.set_data_header(header)
             
             udp_source = create_udp_source(host, port)
             success = self.data_source_manager.set_source(udp_source)
@@ -196,7 +203,7 @@ class MainWindow(QMainWindow):
                         self.save_file_label.setText(f"保存文件: {save_file}")
                         self.auto_save_enabled = True
                 
-                QMessageBox.information(self, "成功", f"已连接到 {host}:{port}")
+                QMessageBox.information(self, "成功", f"已连接到 {host}:{port}\n数据校验头: {header}")
             else:
                 QMessageBox.warning(self, "失败", "连接失败，请检查配置")
         except ValueError:

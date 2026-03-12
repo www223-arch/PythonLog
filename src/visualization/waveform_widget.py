@@ -292,6 +292,10 @@ class WaveformWidget(QWidget):
         closest_point = None
         
         for name, channel in self.channels.items():
+            # 检查曲线是否可见
+            if not channel['curve'].isVisible():
+                continue
+            
             if not channel['x_data'] or not channel['data']:
                 continue
             

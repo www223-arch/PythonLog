@@ -25,6 +25,8 @@ class DataSourceManager:
         self.channels = []
         self.channel_data = {}  # 存储各通道的数据
         self.timestamps = []  # 存储时间戳
+        self.data_header = 'DATA'  # 数据校验头，默认'DATA'
+        self.header_enabled = True  # 是否启用数据校验头验证
  
     
     def set_source(self, source: DataSource) -> bool:
@@ -45,6 +47,9 @@ class DataSourceManager:
             
             if success:
                 self.data_buffer.clear()
+                self.channels.clear()
+                self.channel_data.clear()
+                self.timestamps.clear()
                 print(f"数据源已切换到: {source}")
             
             return success
@@ -57,7 +62,7 @@ class DataSourceManager:
         
         Returns:
             读取到的数据字典，如果没有数据源返回None
-            格式: {'timestamp': float, 'channel1': float, 'channel2': float, ...}
+            格式: {'header': str, 'timestamp': float, '通道一': float, '通道二': float, ...}
         """
         if not self.current_source:
             return None
@@ -65,23 +70,44 @@ class DataSourceManager:
         data = self.current_source.read_data()
         
         if data is not None and len(data) > 0:
-            # 解析数据：第一个元素是时间戳，后面是通道数据
-            timestamp = float(data[0])
+            # 解析数据：第一个元素是数据校验头，第二个是时间戳，后面是通道数据
+            header = str(data[0])
+            
+            # 验证数据校验头
+            if self.header_enabled and header != self.data_header:
+                print(f"[警告] 数据校验头不匹配: 期望'{self.data_header}', 收到'{header}' - 丢弃数据")
+                return None
+            
+            timestamp = float(data[1])
             
             # 构建数据字典
-            data_dict = {'timestamp': timestamp}
+            data_dict = {'header': header, 'timestamp': timestamp}
             
-            # 自动检测通道（从UDP数据中提取）
-            # 假设数据格式: timestamp, channel1_value, channel2_value, ...
-            # 通道名称自动生成: channel1, channel2, ...
-            for i, value in enumerate(data[1:], 1):
-                channel_name = f'channel{i}'
-                data_dict[channel_name] = float(value)
+            # 从UDP数据源获取通道名称
+            if hasattr(self.current_source, 'get_channel_names'):
+                channel_names = self.current_source.get_channel_names()
                 
-                # 自动添加新通道
-                if channel_name not in self.channels:
-                    self.channels.append(channel_name)
-                    print(f"检测到新通道: {channel_name}")
+                # 使用提取到的通道名称
+                for i, value in enumerate(data[2:]):
+                    if i < len(channel_names):
+                        channel_name = channel_names[i]
+                    else:
+                        channel_name = f'channel{i+1}'
+                    data_dict[channel_name] = float(value)
+                    
+                    # 自动添加新通道
+                    if channel_name not in self.channels:
+                        self.channels.append(channel_name)
+                        print(f"检测到新通道: {channel_name}")
+            else:
+                # 如果没有get_channel_names方法，使用默认通道名称
+                for i, value in enumerate(data[2:], 1):
+                    channel_name = f'channel{i}'
+                    data_dict[channel_name] = float(value)
+                    
+                    if channel_name not in self.channels:
+                        self.channels.append(channel_name)
+                        print(f"检测到新通道: {channel_name}")
             
             # 保存到缓冲区
             self.data_buffer.append(data_dict)
@@ -164,13 +190,9 @@ class DataSourceManager:
         Returns:
             bool: 成功返回True，失败返回False
         """
-        # 如果通道列表为空，使用默认通道名称
-        if not self.channels:
-            default_channels = ['channel1', 'channel2', 'channel3', 'channel4', 'channel5']
-            print(f"[Manager] 通道列表为空，使用默认通道: {default_channels}")
-            return self.data_saver.start_saving(default_channels)
-        
-        return self.data_saver.start_saving(self.channels)
+        # 不传入通道列表，让DataSaver等待检测到真正的通道名称后再写入表头
+        # 这样可以确保CSV表头使用的是从数据中提取的真实通道名称
+        return self.data_saver.start_saving(None)
     
     def stop_saving(self) -> None:
         """停止保存数据"""
@@ -191,6 +213,40 @@ class DataSourceManager:
             bool: 正在保存返回True
         """
         return self.data_saver.is_active()
+    
+    def set_data_header(self, header: str) -> None:
+        """设置数据校验头
+        
+        Args:
+            header: 数据校验头字符串
+        """
+        self.data_header = header
+        print(f"数据校验头已设置为: {header}")
+    
+    def get_data_header(self) -> str:
+        """获取当前数据校验头
+        
+        Returns:
+            数据校验头字符串
+        """
+        return self.data_header
+    
+    def set_header_enabled(self, enabled: bool) -> None:
+        """设置是否启用数据校验头验证
+        
+        Args:
+            enabled: True为启用，False为禁用
+        """
+        self.header_enabled = enabled
+        print(f"数据校验头验证已{'启用' if enabled else '禁用'}")
+    
+    def is_header_enabled(self) -> bool:
+        """检查是否启用数据校验头验证
+        
+        Returns:
+            True为启用，False为禁用
+        """
+        return self.header_enabled
 
 
 # 便捷函数：创建UDP数据源并连接

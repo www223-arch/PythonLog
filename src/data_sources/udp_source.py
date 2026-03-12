@@ -29,6 +29,7 @@ class UDPDataSource(DataSource):
         self.socket = None
         self.buffer_size = 1024
         self.data_format = 'f'  # 默认浮点数格式
+        self.last_raw_text = None  # 存储原始文本，用于提取通道名称
     
     def connect(self) -> bool:
         """连接UDP数据源
@@ -93,25 +94,31 @@ class UDPDataSource(DataSource):
     def _parse_text_data(self, text: str) -> Tuple[float, ...]:
         """解析文本格式数据
         
-        格式: "时间戳,通道一=数值,通道二=数值"
+        格式: "数据校验头,时间戳,通道一=数值,通道二=数值"
         
         Args:
             text: 文本数据
         
         Returns:
-            解析后的数据元组 (时间戳, 通道1值, 通道2值, ...)
+            解析后的数据元组 (数据校验头, 时间戳, 通道1值, 通道2值, ...)
         """
         try:
+            # 保存原始文本，用于提取通道名称
+            self.last_raw_text = text
+            
             parts = text.split(',')
             if not parts:
                 return tuple()
             
-            # 第一部分是时间戳
-            timestamp = float(parts[0])
-            values = [timestamp]
+            # 第一部分是数据校验头
+            header = parts[0].strip()
             
-            # 解析通道数据
-            for part in parts[1:]:
+            # 第二部分是时间戳
+            timestamp = float(parts[1].strip())
+            values = [header, timestamp]
+            
+            # 解析通道数据（从第三部分开始）
+            for part in parts[2:]:
                 if '=' in part:
                     channel_part, value_part = part.split('=', 1)
                     value = float(value_part)
@@ -121,6 +128,34 @@ class UDPDataSource(DataSource):
         except Exception as e:
             print(f"文本数据解析失败: {e}, 文本: {text}")
             return tuple()
+    
+    def get_channel_names(self) -> list:
+        """从原始文本中提取通道名称
+        
+        Returns:
+            通道名称列表
+        """
+        if not self.last_raw_text:
+            return []
+        
+        try:
+            parts = self.last_raw_text.split(',')
+            if len(parts) < 3:
+                return []
+            
+            # 从第三部分开始提取通道名称
+            channel_names = []
+            for part in parts[2:]:
+                if '=' in part:
+                    channel_part, _ = part.split('=', 1)
+                    channel_name = channel_part.strip()
+                    if channel_name and channel_name not in channel_names:
+                        channel_names.append(channel_name)
+            
+            return channel_names
+        except Exception as e:
+            print(f"提取通道名称失败: {e}")
+            return []
     
     def _parse_binary_data(self, data: bytes) -> Tuple[float, ...]:
         """解析二进制格式数据

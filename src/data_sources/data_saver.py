@@ -88,8 +88,8 @@ class DataSaver:
             # 提取时间戳
             timestamp = data.get('timestamp', 0.0)
             
-            # 获取当前数据中的所有通道（排除时间戳）
-            data_channels = [k for k in data.keys() if k != 'timestamp']
+            # 获取当前数据中的所有通道（排除header和timestamp）
+            data_channels = [k for k in data.keys() if k not in ['header', 'timestamp']]
             
             # 检查是否有新通道
             new_channels = [ch for ch in data_channels if ch not in self.channels]
@@ -105,7 +105,7 @@ class DataSaver:
                     self.header_written = True
                     print(f"[CSV] 写入表头: {header}")
             
-            # 构建数据行：时间戳 + 各通道数据
+            # 构建数据行：时间戳 + 各通道数据（按self.channels的顺序）
             row = [timestamp]
             for channel in self.channels:
                 value = data.get(channel, 0.0)
