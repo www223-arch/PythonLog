@@ -164,6 +164,12 @@ class DataSourceManager:
         Returns:
             bool: 成功返回True，失败返回False
         """
+        # 如果通道列表为空，使用默认通道名称
+        if not self.channels:
+            default_channels = ['channel1', 'channel2', 'channel3', 'channel4', 'channel5']
+            print(f"[Manager] 通道列表为空，使用默认通道: {default_channels}")
+            return self.data_saver.start_saving(default_channels)
+        
         return self.data_saver.start_saving(self.channels)
     
     def stop_saving(self) -> None:
