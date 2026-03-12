@@ -37,6 +37,17 @@ class WaveformWidget(QWidget):
         self.is_paused = False
         self.auto_scale = True
         
+        # 标记点存储
+        self.marked_points = []  # 存储标记的点 [(channel_name, x, y), ...]
+        self.marked_scatter = None  # 标记点的散点图
+        
+        # 双击防抖
+        self.last_click_time = 0  # 上次点击时间
+        self.click_count = 0  # 点击计数
+        self.click_timer = QTimer()  # 点击定时器
+        self.click_timer.setSingleShot(True)
+        self.click_timer.timeout.connect(self.reset_click_count)
+        
         # 更新定时器
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_display)
@@ -60,11 +71,20 @@ class WaveformWidget(QWidget):
         
         # 鼠标移动事件
         self.plot_widget.scene().sigMouseMoved.connect(self.mouse_moved)
+        print("鼠标移动事件已连接")
+        
+        # 鼠标双击事件
+        self.plot_widget.scene().sigMouseClicked.connect(self.mouse_clicked)
+        
+        # 鼠标双击事件
+        self.plot_widget.scene().sigMouseClicked.connect(self.mouse_clicked)
         
         # 信息标签
         self.info_label = QLabel("就绪")
         self.info_label.setFont(QFont("Arial", 9))
         self.info_label.setStyleSheet("color: #666;")
+        self.info_label.setWordWrap(True)  # 允许换行
+        self.info_label.setWordWrap(True)  # 允许换行
         
         # 控制按钮
         control_layout = QVBoxLayout()
@@ -190,6 +210,7 @@ class WaveformWidget(QWidget):
             channel['x_data'].clear()
             channel['curve'].setData([], [])
         self.time_counter = 0
+        self.clear_marked_points()  # 清空标记点
         print("所有数据已清空")
     
     def clear_channel(self, name: str) -> None:
@@ -210,19 +231,32 @@ class WaveformWidget(QWidget):
         Args:
             pos: 鼠标位置
         """
-        if self.is_paused:
-            vb = self.plot_widget.plotItem.vb
-            mouse_point = vb.mapSceneToView(pos)
-            x = mouse_point.x()
-            y = mouse_point.y()
+        vb = self.plot_widget.plotItem.vb
+        mouse_point = vb.mapSceneToView(pos)
+        x = mouse_point.x()
+        y = mouse_point.y()
+        
+        # 查找最近的数据点
+        closest_point = self.find_closest_point(x, y)
+        
+        if closest_point:
+            channel_name, point_x, point_y = closest_point
             
-            # 查找最近的数据点
-            closest_point = self.find_closest_point(x, y)
-            if closest_point:
-                channel_name, point_x, point_y = closest_point
+            # 如果有标记点，显示标记点信息
+            if self.marked_points:
+                info_text = self.get_marked_points_info()
+                self.info_label.setText(info_text)
+            else:
+                # 无论是否暂停，都显示最近点信息
                 self.info_label.setText(
                     f"通道: {channel_name} | X: {point_x:.2f} | Y: {point_y:.4f}"
                 )
+        else:
+            # 如果没有找到最近点，显示就绪或标记点信息
+            if self.marked_points:
+                self.info_label.setText(self.get_marked_points_info())
+            else:
+                self.info_label.setText("就绪")
     
     def find_closest_point(self, x: float, y: float) -> Optional[Tuple[str, float, float]]:
         """查找最近的数据点
@@ -247,7 +281,153 @@ class WaveformWidget(QWidget):
                     min_distance = distance
                     closest_point = (name, px, py)
         
-        return closest_point if min_distance < 10 else None
+        # 降低距离阈值，让吸附更容易
+        return closest_point if min_distance < 50 else None
+    
+    def mouse_clicked(self, event) -> None:
+        """鼠标点击事件处理
+        
+        Args:
+            event: 鼠标事件
+        """
+        from PyQt5.QtCore import QTime
+        
+        current_time = QTime.currentTime().msecsSinceStartOfDay()
+        
+        # 如果距离上次点击时间小于500ms，认为是双击
+        if current_time - self.last_click_time < 800:
+            self.click_count += 1
+            self.click_timer.stop()  # 停止定时器
+            
+            # 双击事件
+            if self.click_count >= 2:
+                self.handle_double_click(event)
+                self.reset_click_count()
+            else:
+                # 重新启动定时器
+                self.click_timer.start(800)
+        else:
+            # 单击事件，重置计数
+            self.click_count = 1
+            self.click_timer.start(800)
+        
+        self.last_click_time = current_time
+    
+    def reset_click_count(self) -> None:
+        """重置点击计数"""
+        self.click_count = 0
+        self.click_timer.stop()
+    
+    def handle_double_click(self, event) -> None:
+        """处理双击事件
+        
+        Args:
+            event: 鼠标事件
+        """
+        # 获取鼠标位置
+        pos = event.scenePos()
+        vb = self.plot_widget.plotItem.vb
+        mouse_point = vb.mapSceneToView(pos)
+        x = mouse_point.x()
+        y = mouse_point.y()
+        
+        # 查找最近的数据点
+        closest_point = self.find_closest_point(x, y)
+        
+        if closest_point:
+            channel_name, point_x, point_y = closest_point
+            
+            # 检查是否已经标记过这个点（避免重复标记）
+            for marked in self.marked_points:
+                if (abs(marked[1] - point_x) < 0.01 and 
+                    abs(marked[2] - point_y) < 0.0001):
+                    print("该点已标记")
+                    return
+            
+            # 如果已经有2个标记点，清空所有标记并直接返回
+            if len(self.marked_points) >= 2:
+                self.clear_marked_points()
+                print("标记点已清空")
+                return  # 直接返回，不要添加新标记点
+            
+            # 添加新的标记点
+            self.marked_points.append((channel_name, point_x, point_y))
+            
+            # 更新标记点显示
+            self.update_marked_points_display()
+            
+            # 更新信息标签
+            self.info_label.setText(self.get_marked_points_info())
+            
+            print(f"已标记点: 通道={channel_name}, X={point_x:.2f}, Y={point_y:.4f}")
+        else:
+            # 双击空白处，清空标记点
+            self.clear_marked_points()
+            self.info_label.setText("标记点已清空")
+    
+    def update_marked_points_display(self) -> None:
+        """更新标记点的显示"""
+        # 移除旧的标记点
+        if self.marked_scatter:
+            self.plot_widget.removeItem(self.marked_scatter)
+        
+        # 如果没有标记点，直接返回
+        if not self.marked_points:
+            self.marked_scatter = None
+            return
+        
+        # 提取标记点的坐标
+        x_coords = [point[1] for point in self.marked_points]
+        y_coords = [point[2] for point in self.marked_points]
+        
+        # 创建新的标记点散点图
+        self.marked_scatter = pg.ScatterPlotItem(
+            x=x_coords,
+            y=y_coords,
+            size=15,
+            pen=pg.mkPen('r', width=2),
+            brush=pg.mkBrush(255, 0, 0, 150),
+            symbol='o'
+        )
+        self.plot_widget.addItem(self.marked_scatter)
+    
+    def clear_marked_points(self) -> None:
+        """清空所有标记点"""
+        self.marked_points.clear()
+        
+        # 移除标记点显示
+        if self.marked_scatter:
+            self.plot_widget.removeItem(self.marked_scatter)
+            self.marked_scatter = None
+        
+        print("标记点已清空")
+    
+    def get_marked_points_info(self) -> str:
+        """获取标记点信息
+        
+        Returns:
+            标记点信息字符串
+        """
+        if not self.marked_points:
+            return "就绪"
+        
+        if len(self.marked_points) == 1:
+            channel, x, y = self.marked_points[0]
+            return f"标记点1: 通道={channel} | X={x:.2f} | Y={y:.4f}"
+        
+        if len(self.marked_points) == 2:
+            channel1, x1, y1 = self.marked_points[0]
+            channel2, x2, y2 = self.marked_points[1]
+            
+            # 计算差值
+            dx = x2 - x1
+            dy = y2 - y1
+            
+            return (f"标记点1: 通道={channel1} | X={x1:.2f} | Y={y1:.4f}\n"
+                    f"标记点2: 通道={channel2} | X={x2:.2f} | Y={y2:.4f}\n"
+                    f"差值: ΔX={dx:.2f} | ΔY={dy:.4f}")
+        
+        return "就绪"
     
     def set_max_points(self, max_points: int) -> None:
         """设置最大数据点数
