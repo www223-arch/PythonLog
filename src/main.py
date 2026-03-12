@@ -11,7 +11,7 @@ import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QGroupBox, QFormLayout, QMessageBox, QFileDialog)
+                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
@@ -75,13 +75,15 @@ class MainWindow(QMainWindow):
         udp_layout.addRow("数据校验头:", self.header_edit)
         
         self.connect_btn = QPushButton("连接")
-        self.connect_btn.clicked.connect(self.connect_udp)
-        self.disconnect_btn = QPushButton("断开")
-        self.disconnect_btn.clicked.connect(self.disconnect_udp)
-        self.disconnect_btn.setEnabled(False)
+        self.connect_btn.clicked.connect(self.toggle_connection)
         
         udp_layout.addRow(self.connect_btn)
-        udp_layout.addRow(self.disconnect_btn)
+        
+        # 暂停按钮
+        self.pause_btn = QPushButton("暂停")
+        self.pause_btn.clicked.connect(self.toggle_pause)
+        self.pause_btn.setEnabled(False)
+        udp_layout.addRow(self.pause_btn)
         
         udp_group.setLayout(udp_layout)
         layout.addWidget(udp_group)
@@ -94,6 +96,24 @@ class MainWindow(QMainWindow):
         self.channels_label.setStyleSheet("color: #666;")
         
         channel_layout.addWidget(self.channels_label)
+        
+        # 缓存区大小设置
+        buffer_layout = QHBoxLayout()
+        buffer_label = QLabel("缓存区大小:")
+        self.buffer_size_edit = QLineEdit("1000")
+        self.buffer_size_edit.setPlaceholderText("数据点数")
+        buffer_apply_btn = QPushButton("应用")
+        buffer_apply_btn.clicked.connect(self.apply_buffer_size)
+        buffer_layout.addWidget(buffer_label)
+        buffer_layout.addWidget(self.buffer_size_edit)
+        buffer_layout.addWidget(buffer_apply_btn)
+        channel_layout.addLayout(buffer_layout)
+        
+        # 数据限制开关
+        self.limit_data_checkbox = QCheckBox("限制数据点数")
+        self.limit_data_checkbox.setChecked(True)
+        self.limit_data_checkbox.toggled.connect(self.toggle_limit_data)
+        channel_layout.addWidget(self.limit_data_checkbox)
         
         clear_channels_btn = QPushButton("清空所有通道")
         clear_channels_btn.clicked.connect(self.clear_all_channels)
@@ -163,66 +183,69 @@ class MainWindow(QMainWindow):
         # 数据更新定时器
         self.data_timer = QTimer()
         self.data_timer.timeout.connect(self.update_data)
-        self.data_timer.start(50)  # 50ms更新一次
+        self.data_timer.start(20)  # 20ms更新一次（50Hz）
     
     def init_connections(self):
         """初始化连接"""
         # 启动波形显示更新
         self.waveform_widget.start_update()
     
-    def connect_udp(self):
-        """连接UDP数据源"""
-        try:
-            host = self.host_edit.text()
-            port = int(self.port_edit.text())
-            header = self.header_edit.text().strip() or 'DATA'
-            
-            # 设置数据校验头
-            self.data_source_manager.set_data_header(header)
-            
-            udp_source = create_udp_source(host, port)
-            success = self.data_source_manager.set_source(udp_source)
-            
-            if success:
-                self.status_label.setText("已连接")
-                self.status_label.setStyleSheet("color: green;")
-                self.connect_btn.setEnabled(False)
-                self.disconnect_btn.setEnabled(True)
+    def toggle_connection(self):
+        """切换连接/断开状态"""
+        if self.data_source_manager.is_connected():
+            # 断开连接
+            self.data_source_manager.disconnect()
+            self.status_label.setText("未连接")
+            self.status_label.setStyleSheet("color: red;")
+            self.connect_btn.setText("连接")
+            self.pause_btn.setEnabled(False)
+            self.data_count = 0
+            self.data_count_label.setText("接收数据: 0")
+            self.save_file_label.setText("保存文件: 无")
+            self.channels_label.setText("自动检测通道...")
+            self.save_btn.setText("开始保存")
+            self.auto_save_enabled = False
+            print("UDP连接已断开")
+        else:
+            # 连接
+            try:
+                host = self.host_edit.text()
+                port = int(self.port_edit.text())
+                header = self.header_edit.text().strip() or 'DATA'
                 
-                # 清空旧通道
-                self.waveform_widget.clear_all()
-                self.channels_label.setText("自动检测通道...")
+                # 设置数据校验头
+                self.data_source_manager.set_data_header(header)
                 
-                # 自动开始保存
-                save_path = self.save_path_edit.text()
-                if save_path:
-                    self.data_source_manager.set_save_path(save_path)
-                    if self.data_source_manager.start_saving():
-                        self.save_btn.setText("停止保存")
-                        save_file = self.data_source_manager.get_save_file()
-                        self.save_file_label.setText(f"保存文件: {save_file}")
-                        self.auto_save_enabled = True
+                udp_source = create_udp_source(host, port)
+                success = self.data_source_manager.set_source(udp_source)
                 
-                QMessageBox.information(self, "成功", f"已连接到 {host}:{port}\n数据校验头: {header}")
-            else:
-                QMessageBox.warning(self, "失败", "连接失败，请检查配置")
-        except ValueError:
-            QMessageBox.warning(self, "错误", "请输入有效的端口号")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"连接失败: {str(e)}")
-    
-    def disconnect_udp(self):
-        """断开UDP连接"""
-        self.data_source_manager.disconnect()
-        self.status_label.setText("未连接")
-        self.status_label.setStyleSheet("color: red;")
-        self.connect_btn.setEnabled(True)
-        self.disconnect_btn.setEnabled(False)
-        self.data_count = 0
-        self.data_count_label.setText("接收数据: 0")
-        self.save_file_label.setText("保存文件: 无")
-        self.channels_label.setText("自动检测通道...")
-        self.save_btn.setText("开始保存")
+                if success:
+                    self.status_label.setText("已连接")
+                    self.status_label.setStyleSheet("color: green;")
+                    self.connect_btn.setText("断开")
+                    self.pause_btn.setEnabled(True)
+                    
+                    # 清空旧通道
+                    self.waveform_widget.clear_all()
+                    self.channels_label.setText("自动检测通道...")
+                    
+                    # 自动开始保存
+                    save_path = self.save_path_edit.text()
+                    if save_path:
+                        self.data_source_manager.set_save_path(save_path)
+                        if self.data_source_manager.start_saving():
+                            self.save_btn.setText("停止保存")
+                            save_file = self.data_source_manager.get_save_file()
+                            self.save_file_label.setText(f"保存文件: {save_file}")
+                            self.auto_save_enabled = True
+                    
+                    print(f"已连接到 {host}:{port}，数据校验头: {header}")
+                else:
+                    QMessageBox.warning(self, "失败", "连接失败，请检查配置")
+            except ValueError:
+                QMessageBox.warning(self, "错误", "请输入有效的端口号")
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"连接失败: {str(e)}")
     
     def browse_save_path(self):
         """浏览保存路径"""
@@ -256,15 +279,61 @@ class MainWindow(QMainWindow):
         self.data_count = 0
         self.data_count_label.setText("接收数据: 0")
     
+    def apply_buffer_size(self):
+        """应用缓存区大小设置"""
+        try:
+            size = int(self.buffer_size_edit.text())
+            if size < 100:
+                QMessageBox.warning(self, "警告", "缓存区大小不能小于100")
+                return
+            if size > 100000:
+                QMessageBox.warning(self, "警告", "缓存区大小不能超过100000")
+                return
+            
+            self.waveform_widget.set_max_points(size)
+            QMessageBox.information(self, "成功", f"缓存区大小已设置为 {size} 个数据点")
+        except ValueError:
+            QMessageBox.warning(self, "错误", "请输入有效的数字")
+    
+    def toggle_limit_data(self, checked: bool):
+        """切换数据限制开关
+        
+        Args:
+            checked: 是否选中
+        """
+        self.waveform_widget.set_limit_data(checked)
+    
+    def toggle_pause(self):
+        """切换暂停状态
+        
+        暂停时：保持连接，图像不打印，保存继续
+        取消暂停：曲线从最新接收的数据开始打印
+        """
+        if self.waveform_widget.is_paused:
+            # 取消暂停
+            self.waveform_widget.is_paused = False
+            self.pause_btn.setText("暂停")
+            print("波形显示已恢复")
+        else:
+            # 暂停
+            self.waveform_widget.is_paused = True
+            self.pause_btn.setText("继续")
+            print("波形显示已暂停（数据继续接收和保存）")
+    
     def update_data(self):
         """更新数据"""
         if not self.data_source_manager.is_connected():
             return
         
-        # 读取数据（返回字典格式）
-        data_dict = self.data_source_manager.read_data()
-        
-        if data_dict is not None:
+        # 循环读取所有积压的数据
+        while True:
+            # 读取数据（返回字典格式）
+            data_dict = self.data_source_manager.read_data()
+            
+            if data_dict is None:
+                # 没有更多数据，退出循环
+                break
+            
             self.data_count += 1
             self.data_count_label.setText(f"接收数据: {self.data_count}")
             

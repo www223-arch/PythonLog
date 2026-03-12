@@ -40,7 +40,7 @@ class UDPDataSource(DataSource):
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.socket.bind((self.host, self.port))
-            self.socket.settimeout(0.01)  # 设置超时时间
+            self.socket.settimeout(0.001)  # 设置超时时间为1ms（非阻塞）
             self.is_connected = True
             print(f"UDP数据源已连接: {self.host}:{self.port}")
             return True

@@ -30,6 +30,7 @@ class WaveformWidget(QWidget):
         # 数据存储
         self.channels: Dict[str, Dict] = {}  # 通道数据存储
         self.max_points = 1000  # 每个通道最大数据点数
+        self.limit_data = True  # 是否限制数据点数
         self.sample_rate = 1.0  # 采样率
         self.time_counter = 0  # 时间计数器
         
@@ -47,7 +48,7 @@ class WaveformWidget(QWidget):
         # 更新定时器
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_display)
-        self.update_interval = 50  # 更新间隔（毫秒）
+        self.update_interval = 5  # 更新间隔（毫秒）
     
     def init_ui(self):
         """初始化UI"""
@@ -160,8 +161,8 @@ class WaveformWidget(QWidget):
         channel['data'].append(y)
         channel['x_data'].append(x)
         
-        # 限制数据点数
-        if len(channel['data']) > self.max_points:
+        # 限制数据点数（如果启用）
+        if self.limit_data and len(channel['data']) > self.max_points:
             channel['data'] = channel['data'][-self.max_points:]
             channel['x_data'] = channel['x_data'][-self.max_points:]
     
@@ -171,10 +172,9 @@ class WaveformWidget(QWidget):
         Args:
             data_dict: 通道名称到数据的映射
             timestamp: 时间戳（可选），如果不提供则使用内部计数器
-        """
-        if self.is_paused:
-            return
         
+        注意：暂停时仍然保存数据到曲线中，只是不更新显示
+        """
         # 使用传入的时间戳，如果没有则使用内部计数器
         if timestamp is not None:
             current_time = timestamp
@@ -187,7 +187,13 @@ class WaveformWidget(QWidget):
                 self.update_channel(name, current_time, value)
     
     def update_display(self) -> None:
-        """更新显示"""
+        """更新显示
+        
+        注意：暂停时不更新显示，但数据仍然保存到曲线中
+        """
+        if self.is_paused:
+            return
+        
         for name, channel in self.channels.items():
             if channel['x_data'] and channel['data']:
                 channel['curve'].setData(channel['x_data'], channel['data'])
@@ -488,6 +494,15 @@ class WaveformWidget(QWidget):
             max_points: 最大数据点数
         """
         self.max_points = max_points
+    
+    def set_limit_data(self, limit: bool) -> None:
+        """设置是否限制数据点数
+        
+        Args:
+            limit: True表示限制数据点数，False表示不限制
+        """
+        self.limit_data = limit
+        print(f"数据限制已{'启用' if limit else '禁用'}，最大点数: {self.max_points if limit else '无限制'}")
     
     def set_sample_rate(self, sample_rate: float) -> None:
         """设置采样率
