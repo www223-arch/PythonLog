@@ -41,7 +41,8 @@ class WaveformWidget(QWidget):
         self.marked_points = []  # 存储标记的点 [(channel_name, x, y), ...]
         self.marked_scatter = None  # 标记点的散点图
         
-
+        # 临时吸附点标识
+        self.hover_scatter = None  # 鼠标悬停时的临时标识
         
         # 更新定时器
         self.update_timer = QTimer()
@@ -232,30 +233,45 @@ class WaveformWidget(QWidget):
         """
         vb = self.plot_widget.plotItem.vb
         mouse_point = vb.mapSceneToView(pos)
-        x = mouse_point.x()
-        y = mouse_point.y()
+        mouse_x = mouse_point.x()
+        mouse_y = mouse_point.y()
         
         # 查找最近的数据点
-        closest_point = self.find_closest_point(x, y)
+        closest_point = self.find_closest_point(mouse_x, mouse_y)
         
         if closest_point:
             channel_name, point_x, point_y = closest_point
             
+            # 更新临时吸附点标识
+            self.update_hover_point(point_x, point_y)
+            
             # 如果有标记点，显示标记点信息
             if self.marked_points:
                 info_text = self.get_marked_points_info()
-                self.info_label.setText(info_text)
+                # 添加鼠标坐标信息
+                mouse_info = f"\n鼠标: X={mouse_x:.2f} | Y={mouse_y:.4f}"
+                self.info_label.setText(info_text + mouse_info)
             else:
-                # 无论是否暂停，都显示最近点信息
+                # 无论是否暂停，都显示最近点信息和鼠标坐标
                 self.info_label.setText(
-                    f"通道: {channel_name} | X: {point_x:.2f} | Y: {point_y:.4f}"
+                    f"通道: {channel_name} | 吸附: X={point_x:.2f} | Y={point_y:.4f}\n"
+                    f"鼠标: X={mouse_x:.2f} | Y={mouse_y:.4f}"
                 )
         else:
-            # 如果没有找到最近点，显示就绪或标记点信息
+            # 如果没有找到最近点，隐藏临时标识
+            self.hide_hover_point()
+            
+            # 显示就绪或标记点信息
             if self.marked_points:
-                self.info_label.setText(self.get_marked_points_info())
+                info_text = self.get_marked_points_info()
+                # 添加鼠标坐标信息
+                mouse_info = f"\n鼠标: X={mouse_x:.2f} | Y={mouse_y:.4f}"
+                self.info_label.setText(info_text + mouse_info)
             else:
-                self.info_label.setText("就绪")
+                # 只显示鼠标坐标
+                self.info_label.setText(
+                    f"鼠标: X={mouse_x:.2f} | Y={mouse_y:.4f}"
+                )
     
     def find_closest_point(self, x: float, y: float) -> Optional[Tuple[str, float, float]]:
         """查找最近的数据点
@@ -396,7 +412,38 @@ class WaveformWidget(QWidget):
             self.plot_widget.removeItem(self.marked_scatter)
             self.marked_scatter = None
         
+        # 隐藏临时吸附点
+        self.hide_hover_point()
+        
         print("标记点已清空")
+    
+    def update_hover_point(self, x: float, y: float) -> None:
+        """更新临时吸附点标识
+        
+        Args:
+            x: x坐标
+            y: y坐标
+        """
+        # 移除旧的临时标识
+        if self.hover_scatter:
+            self.plot_widget.removeItem(self.hover_scatter)
+        
+        # 创建新的临时标识（黄色圆点）
+        self.hover_scatter = pg.ScatterPlotItem(
+            x=[x],
+            y=[y],
+            size=20,
+            pen=pg.mkPen('y', width=2),
+            brush=pg.mkBrush(255, 255, 0, 150),
+            symbol='o'
+        )
+        self.plot_widget.addItem(self.hover_scatter)
+    
+    def hide_hover_point(self) -> None:
+        """隐藏临时吸附点标识"""
+        if self.hover_scatter:
+            self.plot_widget.removeItem(self.hover_scatter)
+            self.hover_scatter = None
     
     def get_marked_points_info(self) -> str:
         """获取标记点信息
