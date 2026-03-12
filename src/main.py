@@ -8,9 +8,10 @@ Python上位机主程序
 """
 
 import sys
+import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QGroupBox, QFormLayout, QMessageBox)
+                             QGroupBox, QFormLayout, QMessageBox, QFileDialog)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
@@ -121,6 +122,17 @@ class MainWindow(QMainWindow):
         save_group = QGroupBox("数据保存")
         save_layout = QVBoxLayout()
         
+        self.save_path_edit = QLineEdit("data")
+        self.save_path_edit.setPlaceholderText("保存目录")
+        
+        browse_btn = QPushButton("浏览...")
+        browse_btn.clicked.connect(self.browse_save_path)
+        
+        path_layout = QHBoxLayout()
+        path_layout.addWidget(self.save_path_edit)
+        path_layout.addWidget(browse_btn)
+        save_layout.addLayout(path_layout)
+        
         self.save_btn = QPushButton("开始保存")
         self.save_btn.clicked.connect(self.toggle_saving)
         save_layout.addWidget(self.save_btn)
@@ -143,6 +155,7 @@ class MainWindow(QMainWindow):
         """初始化组件"""
         self.data_source_manager = DataSourceManager()
         self.data_count = 0
+        self.auto_save_enabled = False
         
         # 数据更新定时器
         self.data_timer = QTimer()
@@ -173,6 +186,16 @@ class MainWindow(QMainWindow):
                 self.waveform_widget.clear_all()
                 self.channels_label.setText("自动检测通道...")
                 
+                # 自动开始保存
+                save_path = self.save_path_edit.text()
+                if save_path:
+                    self.data_source_manager.set_save_path(save_path)
+                    if self.data_source_manager.start_saving():
+                        self.save_btn.setText("停止保存")
+                        save_file = self.data_source_manager.get_save_file()
+                        self.save_file_label.setText(f"保存文件: {save_file}")
+                        self.auto_save_enabled = True
+                
                 QMessageBox.information(self, "成功", f"已连接到 {host}:{port}")
             else:
                 QMessageBox.warning(self, "失败", "连接失败，请检查配置")
@@ -194,18 +217,29 @@ class MainWindow(QMainWindow):
         self.channels_label.setText("自动检测通道...")
         self.save_btn.setText("开始保存")
     
+    def browse_save_path(self):
+        """浏览保存路径"""
+        dir_path = QFileDialog.getExistingDirectory(self, "选择保存目录", self.save_path_edit.text())
+        if dir_path:
+            self.save_path_edit.setText(dir_path)
+    
     def toggle_saving(self):
         """切换数据保存状态"""
         if self.data_source_manager.is_saving():
             self.data_source_manager.stop_saving()
             self.save_btn.setText("开始保存")
             self.save_file_label.setText("保存文件: 无")
+            self.auto_save_enabled = False
         else:
+            save_path = self.save_path_edit.text()
+            if save_path:
+                self.data_source_manager.set_save_path(save_path)
             success = self.data_source_manager.start_saving()
             if success:
                 self.save_btn.setText("停止保存")
                 save_file = self.data_source_manager.get_save_file()
                 self.save_file_label.setText(f"保存文件: {save_file}")
+                self.auto_save_enabled = True
             else:
                 QMessageBox.warning(self, "失败", "启动数据保存失败")
     
@@ -220,23 +254,32 @@ class MainWindow(QMainWindow):
         if not self.data_source_manager.is_connected():
             return
         
-        data = self.data_source_manager.read_data()
+        # 读取数据（返回字典格式）
+        data_dict = self.data_source_manager.read_data()
         
-        if data is not None and len(data) > 0:
+        if data_dict is not None:
             self.data_count += 1
             self.data_count_label.setText(f"接收数据: {self.data_count}")
             
-            # 将数据分发到各个通道
-            data_dict = {}
-            for i, value in enumerate(data):
-                channel_name = f"ch{i+1}"
-                if channel_name in self.waveform_widget.channels:
-                    data_dict[channel_name] = value
+            # 获取当前所有通道
+            channels = self.data_source_manager.get_channels()
+            
+            # 更新通道显示
+            if channels:
+                channels_text = ", ".join(channels)
+                self.channels_label.setText(f"检测到通道: {channels_text}")
+            
+            # 自动创建通道
+            colors = ['r', 'g', 'b', 'c', 'm', 'y', 'k', 'w']
+            for i, channel_name in enumerate(channels):
+                if channel_name not in self.waveform_widget.channels:
+                    color = colors[i % len(colors)]
+                    self.waveform_widget.add_channel(channel_name, color, 2)
             
             # 更新波形显示（使用发送方的时间戳）
-        timestamp = data_dict.get('timestamp', 0.0)
-        waveform_data = {k: v for k, v in data_dict.items() if k != 'timestamp'}
-        self.waveform_widget.update_channels(waveform_data, timestamp)
+            timestamp = data_dict.get('timestamp', 0.0)
+            waveform_data = {k: v for k, v in data_dict.items() if k != 'timestamp'}
+            self.waveform_widget.update_channels(waveform_data, timestamp)
     
     def closeEvent(self, event):
         """关闭事件"""

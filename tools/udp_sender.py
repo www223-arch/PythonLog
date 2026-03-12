@@ -64,9 +64,13 @@ class UDPSender:
         print("按Ctrl+C停止")
         
         try:
+            sample_interval = 1.0 / sample_rate  # 采样间隔
+            sample_count = 0  # 采样计数器
+            
             while self.is_running and (time.time() - start_time) < duration:
-                t = time.time() - start_time
-                timestamp = t  # 使用时间作为时间戳
+                # 使用累积计数器生成均匀的时间戳
+                timestamp = sample_count * sample_interval
+                t = timestamp  # 使用均匀的时间戳计算波形
                 
                 # 生成多通道正弦波数据
                 channel_data = {}
@@ -80,7 +84,9 @@ class UDPSender:
                 
                 # 发送文本格式数据
                 self.send_data(timestamp, channel_data)
-                time.sleep(1.0 / sample_rate)
+                
+                sample_count += 1
+                time.sleep(sample_interval)
                 
         except KeyboardInterrupt:
             print("\n发送已停止")
@@ -109,9 +115,12 @@ class UDPSender:
         print("按Ctrl+C停止")
         
         try:
+            sample_interval = 1.0 / sample_rate  # 采样间隔
+            sample_count = 0  # 采样计数器
+            
             while self.is_running and (time.time() - start_time) < duration:
-                t = time.time() - start_time
-                timestamp = t  # 使用时间作为时间戳
+                # 使用累积计数器生成均匀的时间戳
+                timestamp = sample_count * sample_interval
                 
                 # 生成多通道随机数据
                 channel_data = {}
@@ -122,7 +131,9 @@ class UDPSender:
                 
                 # 发送文本格式数据
                 self.send_data(timestamp, channel_data)
-                time.sleep(1.0 / sample_rate)
+                
+                sample_count += 1
+                time.sleep(sample_interval)
                 
         except KeyboardInterrupt:
             print("\n发送已停止")

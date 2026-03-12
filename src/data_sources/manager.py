@@ -150,77 +150,13 @@ class DataSourceManager:
         """
         return self.channels.copy()
     
-    def start_saving(self) -> bool:
-        """开始保存数据到CSV
+    def set_save_path(self, save_path: str) -> None:
+        """设置数据保存路径
         
-        Returns:
-            bool: 成功返回True，失败返回False
+        Args:
+            save_path: 保存目录路径
         """
-        return self.data_saver.start_saving(self.channels)
-    
-    def stop_saving(self) -> None:
-        """停止保存数据"""
-        self.data_saver.stop_saving()
-    
-    def get_save_file(self) -> Optional[str]:
-        """获取当前保存的文件路径
-        
-        Returns:
-            文件路径，如果没有返回None
-        """
-        return self.data_saver.get_current_file()
-    
-    def is_saving(self) -> bool:
-        """检查是否正在保存数据
-        
-        Returns:
-            bool: 正在保存返回True
-        """
-        return self.data_saver.is_active()
-    
-    def get_channels(self) -> List[str]:
-        """获取所有通道名称
-        
-        Returns:
-            通道名称列表
-        """
-        return self.channels.copy()
-    
-    def start_saving(self) -> bool:
-        """开始保存数据到CSV
-        
-        Returns:
-            bool: 成功返回True，失败返回False
-        """
-        return self.data_saver.start_saving(self.channels)
-    
-    def stop_saving(self) -> None:
-        """停止保存数据"""
-        self.data_saver.stop_saving()
-    
-    def get_save_file(self) -> Optional[str]:
-        """获取当前保存的文件路径
-        
-        Returns:
-            文件路径，如果没有返回None
-        """
-        return self.data_saver.get_current_file()
-    
-    def is_saving(self) -> bool:
-        """检查是否正在保存数据
-        
-        Returns:
-            bool: 正在保存返回True
-        """
-        return self.data_saver.is_active()
-    
-    def get_channels(self) -> List[str]:
-        """获取所有通道名称
-        
-        Returns:
-            通道名称列表
-        """
-        return self.channels.copy()
+        self.data_saver = DataSaver(save_path)
     
     def start_saving(self) -> bool:
         """开始保存数据到CSV
