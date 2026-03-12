@@ -41,12 +41,7 @@ class WaveformWidget(QWidget):
         self.marked_points = []  # 存储标记的点 [(channel_name, x, y), ...]
         self.marked_scatter = None  # 标记点的散点图
         
-        # 双击防抖
-        self.last_click_time = 0  # 上次点击时间
-        self.click_count = 0  # 点击计数
-        self.click_timer = QTimer()  # 点击定时器
-        self.click_timer.setSingleShot(True)
-        self.click_timer.timeout.connect(self.reset_click_count)
+
         
         # 更新定时器
         self.update_timer = QTimer()
@@ -75,6 +70,10 @@ class WaveformWidget(QWidget):
         
         # 鼠标双击事件
         self.plot_widget.scene().sigMouseClicked.connect(self.mouse_clicked)
+        
+        # 双击防抖
+        self.last_click_time = 0
+        self.is_processing = False
         
         # 鼠标双击事件
         self.plot_widget.scene().sigMouseClicked.connect(self.mouse_clicked)
@@ -292,31 +291,23 @@ class WaveformWidget(QWidget):
         """
         from PyQt5.QtCore import QTime
         
+        # 如果正在处理，直接返回
+        if self.is_processing:
+            return
+        
+        # 只处理双击事件
+        if not event.double():
+            return  # 单击不处理
+        
+        # 防抖：检查距离上次双击的时间
         current_time = QTime.currentTime().msecsSinceStartOfDay()
+        if current_time - self.last_click_time < 300:  # 300ms内不重复处理
+            return
         
-        # 如果距离上次点击时间小于500ms，认为是双击
-        if current_time - self.last_click_time < 800:
-            self.click_count += 1
-            self.click_timer.stop()  # 停止定时器
-            
-            # 双击事件
-            if self.click_count >= 2:
-                self.handle_double_click(event)
-                self.reset_click_count()
-            else:
-                # 重新启动定时器
-                self.click_timer.start(800)
-        else:
-            # 单击事件，重置计数
-            self.click_count = 1
-            self.click_timer.start(800)
-        
+        self.is_processing = True
+        self.handle_double_click(event)
         self.last_click_time = current_time
-    
-    def reset_click_count(self) -> None:
-        """重置点击计数"""
-        self.click_count = 0
-        self.click_timer.stop()
+        self.is_processing = False
     
     def handle_double_click(self, event) -> None:
         """处理双击事件
@@ -324,6 +315,8 @@ class WaveformWidget(QWidget):
         Args:
             event: 鼠标事件
         """
+        print(f"处理双击事件，当前标记点数量: {len(self.marked_points)}")
+        
         # 获取鼠标位置
         pos = event.scenePos()
         vb = self.plot_widget.plotItem.vb
@@ -344,13 +337,15 @@ class WaveformWidget(QWidget):
                     print("该点已标记")
                     return
             
-            # 如果已经有2个标记点，清空所有标记并直接返回
+            # 如果已经有2个标记点，清空所有标记
             if len(self.marked_points) >= 2:
+                print("检测到已有2个标记点，清空所有标记")
                 self.clear_marked_points()
                 print("标记点已清空")
                 return  # 直接返回，不要添加新标记点
             
             # 添加新的标记点
+            print(f"添加新标记点: 通道={channel_name}, X={point_x:.2f}, Y={point_y:.4f}")
             self.marked_points.append((channel_name, point_x, point_y))
             
             # 更新标记点显示
@@ -359,9 +354,10 @@ class WaveformWidget(QWidget):
             # 更新信息标签
             self.info_label.setText(self.get_marked_points_info())
             
-            print(f"已标记点: 通道={channel_name}, X={point_x:.2f}, Y={point_y:.4f}")
+            print(f"标记完成，当前标记点数量: {len(self.marked_points)}")
         else:
             # 双击空白处，清空标记点
+            print("双击空白处，清空标记点")
             self.clear_marked_points()
             self.info_label.setText("标记点已清空")
     
