@@ -27,14 +27,20 @@ class UDPSender:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.is_running = False
     
-    def send_data(self, values: list) -> None:
+    def send_data(self, timestamp: float, channel_data: dict) -> None:
         """发送数据
         
         Args:
-            values: 要发送的数据列表（浮点数）
+            timestamp: 时间戳
+            channel_data: 通道名称到数值的映射
         """
-        # 将浮点数列表转换为字节数据
-        data = struct.pack(f'{len(values)}f', *values)
+        # 构建文本数据：时间戳,通道一=数值,通道二=数值
+        parts = [str(timestamp)]
+        for channel_name, value in channel_data.items():
+            parts.append(f"{channel_name}={value:.6f}")
+        
+        text_data = ",".join(parts)
+        data = text_data.encode('utf-8')
         self.socket.sendto(data, (self.host, self.port))
     
     def send_sine_wave(self, channels: int = 3, frequency: float = 1.0, 
@@ -60,17 +66,20 @@ class UDPSender:
         try:
             while self.is_running and (time.time() - start_time) < duration:
                 t = time.time() - start_time
+                timestamp = t  # 使用时间作为时间戳
                 
                 # 生成多通道正弦波数据
-                values = []
+                channel_data = {}
                 for i in range(channels):
                     # 每个通道有不同的频率和相位
                     freq = frequency * (i + 1)
                     phase = i * (2 * math.pi / channels)
                     value = amplitude * math.sin(2 * math.pi * freq * t + phase)
-                    values.append(value)
+                    channel_name = f'通道{i+1}'
+                    channel_data[channel_name] = value
                 
-                self.send_data(values)
+                # 发送文本格式数据
+                self.send_data(timestamp, channel_data)
                 time.sleep(1.0 / sample_rate)
                 
         except KeyboardInterrupt:
@@ -101,8 +110,18 @@ class UDPSender:
         
         try:
             while self.is_running and (time.time() - start_time) < duration:
-                values = [random.uniform(-1, 1) for _ in range(channels)]
-                self.send_data(values)
+                t = time.time() - start_time
+                timestamp = t  # 使用时间作为时间戳
+                
+                # 生成多通道随机数据
+                channel_data = {}
+                for i in range(channels):
+                    value = random.uniform(-1, 1)
+                    channel_name = f'通道{i+1}'
+                    channel_data[channel_name] = value
+                
+                # 发送文本格式数据
+                self.send_data(timestamp, channel_data)
                 time.sleep(1.0 / sample_rate)
                 
         except KeyboardInterrupt:

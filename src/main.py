@@ -84,21 +84,16 @@ class MainWindow(QMainWindow):
         
         # 通道配置组
         channel_group = QGroupBox("通道配置")
-        channel_layout = QFormLayout()
+        channel_layout = QVBoxLayout()
         
-        self.channel_name_edit = QLineEdit("ch1")
-        self.channel_color_edit = QLineEdit("r")
+        self.channels_label = QLabel("自动检测通道...")
+        self.channels_label.setStyleSheet("color: #666;")
         
-        channel_layout.addRow("通道名称:", self.channel_name_edit)
-        channel_layout.addRow("颜色 (r/g/b/c/m/y):", self.channel_color_edit)
-        
-        add_channel_btn = QPushButton("添加通道")
-        add_channel_btn.clicked.connect(self.add_channel)
-        channel_layout.addRow(add_channel_btn)
+        channel_layout.addWidget(self.channels_label)
         
         clear_channels_btn = QPushButton("清空所有通道")
         clear_channels_btn.clicked.connect(self.clear_all_channels)
-        channel_layout.addRow(clear_channels_btn)
+        channel_layout.addWidget(clear_channels_btn)
         
         channel_group.setLayout(channel_layout)
         layout.addWidget(channel_group)
@@ -110,12 +105,28 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel("未连接")
         self.status_label.setStyleSheet("color: red;")
         self.data_count_label = QLabel("接收数据: 0")
+        self.save_file_label = QLabel("保存文件: 无")
+        self.save_file_label.setStyleSheet("color: #666;")
         
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.data_count_label)
+        status_layout.addWidget(self.save_file_label)
         
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
+        
+
+        
+        # 数据保存控制
+        save_group = QGroupBox("数据保存")
+        save_layout = QVBoxLayout()
+        
+        self.save_btn = QPushButton("开始保存")
+        self.save_btn.clicked.connect(self.toggle_saving)
+        save_layout.addWidget(self.save_btn)
+        
+        save_group.setLayout(save_layout)
+        layout.addWidget(save_group)
         
         # 弹簧，推到底部
         layout.addStretch()
@@ -140,11 +151,6 @@ class MainWindow(QMainWindow):
     
     def init_connections(self):
         """初始化连接"""
-        # 默认添加一些通道
-        self.waveform_widget.add_channel("ch1", "r", 2)
-        self.waveform_widget.add_channel("ch2", "g", 2)
-        self.waveform_widget.add_channel("ch3", "b", 2)
-        
         # 启动波形显示更新
         self.waveform_widget.start_update()
     
@@ -162,6 +168,11 @@ class MainWindow(QMainWindow):
                 self.status_label.setStyleSheet("color: green;")
                 self.connect_btn.setEnabled(False)
                 self.disconnect_btn.setEnabled(True)
+                
+                # 清空旧通道
+                self.waveform_widget.clear_all()
+                self.channels_label.setText("自动检测通道...")
+                
                 QMessageBox.information(self, "成功", f"已连接到 {host}:{port}")
             else:
                 QMessageBox.warning(self, "失败", "连接失败，请检查配置")
@@ -179,18 +190,24 @@ class MainWindow(QMainWindow):
         self.disconnect_btn.setEnabled(False)
         self.data_count = 0
         self.data_count_label.setText("接收数据: 0")
+        self.save_file_label.setText("保存文件: 无")
+        self.channels_label.setText("自动检测通道...")
+        self.save_btn.setText("开始保存")
     
-    def add_channel(self):
-        """添加通道"""
-        name = self.channel_name_edit.text()
-        color = self.channel_color_edit.text()
-        
-        if not name:
-            QMessageBox.warning(self, "警告", "请输入通道名称")
-            return
-        
-        self.waveform_widget.add_channel(name, color, 2)
-        QMessageBox.information(self, "成功", f"通道 {name} 已添加")
+    def toggle_saving(self):
+        """切换数据保存状态"""
+        if self.data_source_manager.is_saving():
+            self.data_source_manager.stop_saving()
+            self.save_btn.setText("开始保存")
+            self.save_file_label.setText("保存文件: 无")
+        else:
+            success = self.data_source_manager.start_saving()
+            if success:
+                self.save_btn.setText("停止保存")
+                save_file = self.data_source_manager.get_save_file()
+                self.save_file_label.setText(f"保存文件: {save_file}")
+            else:
+                QMessageBox.warning(self, "失败", "启动数据保存失败")
     
     def clear_all_channels(self):
         """清空所有通道"""
@@ -216,8 +233,10 @@ class MainWindow(QMainWindow):
                 if channel_name in self.waveform_widget.channels:
                     data_dict[channel_name] = value
             
-            # 更新波形显示
-            self.waveform_widget.update_channels(data_dict)
+            # 更新波形显示（使用发送方的时间戳）
+        timestamp = data_dict.get('timestamp', 0.0)
+        waveform_data = {k: v for k, v in data_dict.items() if k != 'timestamp'}
+        self.waveform_widget.update_channels(waveform_data, timestamp)
     
     def closeEvent(self, event):
         """关闭事件"""

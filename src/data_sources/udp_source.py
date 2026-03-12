@@ -69,20 +69,76 @@ class UDPDataSource(DataSource):
     def _parse_data(self, data: bytes) -> Tuple[float, ...]:
         """解析UDP数据
         
+        支持两种格式：
+        1. 二进制格式：多个浮点数
+        2. 文本格式："时间戳,通道一=数值,通道二=数值"
+        
         Args:
             data: 原始字节数据
+        
+        Returns:
+            解析后的数据元组 (时间戳, 通道1值, 通道2值, ...)
+        """
+        try:
+            # 尝试解析为文本格式
+            text_data = data.decode('utf-8').strip()
+            return self._parse_text_data(text_data)
+        except UnicodeDecodeError:
+            # 如果不是文本，尝试二进制格式
+            return self._parse_binary_data(data)
+        except Exception as e:
+            print(f"数据解析失败: {e}, 原始数据: {data}")
+            return tuple()
+    
+    def _parse_text_data(self, text: str) -> Tuple[float, ...]:
+        """解析文本格式数据
+        
+        格式: "时间戳,通道一=数值,通道二=数值"
+        
+        Args:
+            text: 文本数据
+        
+        Returns:
+            解析后的数据元组 (时间戳, 通道1值, 通道2值, ...)
+        """
+        try:
+            parts = text.split(',')
+            if not parts:
+                return tuple()
+            
+            # 第一部分是时间戳
+            timestamp = float(parts[0])
+            values = [timestamp]
+            
+            # 解析通道数据
+            for part in parts[1:]:
+                if '=' in part:
+                    channel_part, value_part = part.split('=', 1)
+                    value = float(value_part)
+                    values.append(value)
+            
+            return tuple(values)
+        except Exception as e:
+            print(f"文本数据解析失败: {e}, 文本: {text}")
+            return tuple()
+    
+    def _parse_binary_data(self, data: bytes) -> Tuple[float, ...]:
+        """解析二进制格式数据
+        
+        格式: 多个浮点数，每个4字节
+        
+        Args:
+            data: 字节数据
         
         Returns:
             解析后的数据元组
         """
         try:
-            # 假设数据是多个浮点数，每个4字节
             num_floats = len(data) // 4
             values = struct.unpack(f'{num_floats}f', data)
             return values
         except struct.error:
-            # 如果解析失败，尝试其他格式
-            print(f"数据解析失败，原始数据: {data}")
+            print(f"二进制数据解析失败，原始数据: {data}")
             return tuple()
     
     def disconnect(self) -> None:

@@ -165,17 +165,22 @@ class WaveformWidget(QWidget):
             channel['data'] = channel['data'][-self.max_points:]
             channel['x_data'] = channel['x_data'][-self.max_points:]
     
-    def update_channels(self, data_dict: Dict[str, float]) -> None:
+    def update_channels(self, data_dict: Dict[str, float], timestamp: Optional[float] = None) -> None:
         """批量更新多个通道数据
         
         Args:
             data_dict: 通道名称到数据的映射
+            timestamp: 时间戳（可选），如果不提供则使用内部计数器
         """
         if self.is_paused:
             return
         
-        self.time_counter += 1
-        current_time = self.time_counter / self.sample_rate
+        # 使用传入的时间戳，如果没有则使用内部计数器
+        if timestamp is not None:
+            current_time = timestamp
+        else:
+            self.time_counter += 1
+            current_time = self.time_counter / self.sample_rate
         
         for name, value in data_dict.items():
             if name in self.channels:
