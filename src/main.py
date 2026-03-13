@@ -11,9 +11,9 @@ import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction)
+                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut)
 from PyQt5.QtCore import Qt, QTimer, QDateTime
-from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient, QKeySequence
 
 from data_sources.manager import DataSourceManager, create_udp_source
 from visualization.waveform_widget import WaveformWidget
@@ -255,6 +255,7 @@ class MainWindow(QMainWindow):
         # 弹簧，推到底部
         layout.addStretch()
         
+    
         # 退出按钮
         exit_btn = QPushButton("退出")
         exit_btn.clicked.connect(self.close)
@@ -285,6 +286,10 @@ class MainWindow(QMainWindow):
         """初始化连接"""
         # 启动波形显示更新
         self.waveform_widget.start_update()
+        
+        # 设置空格键快捷键为暂停/继续
+        self.space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
+        self.space_shortcut.activated.connect(self.toggle_pause)
     
     def toggle_connection(self):
         """切换连接/断开状态"""
