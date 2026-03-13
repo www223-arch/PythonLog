@@ -11,7 +11,7 @@ import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog)
+                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
@@ -94,6 +94,8 @@ class MainWindow(QMainWindow):
         
         self.channels_label = QLabel("自动检测通道...")
         self.channels_label.setStyleSheet("color: #666;")
+        self.channels_label.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.channels_label.customContextMenuRequested.connect(self.show_channel_context_menu)
         
         channel_layout.addWidget(self.channels_label)
         
@@ -114,13 +116,6 @@ class MainWindow(QMainWindow):
         self.limit_data_checkbox.setChecked(True)
         self.limit_data_checkbox.toggled.connect(self.toggle_limit_data)
         channel_layout.addWidget(self.limit_data_checkbox)
-        
-        # 通道颜色设置
-        color_settings_layout = QHBoxLayout()
-        self.set_channel_colors_btn = QPushButton("设置通道颜色")
-        self.set_channel_colors_btn.clicked.connect(self.set_channel_colors)
-        color_settings_layout.addWidget(self.set_channel_colors_btn)
-        channel_layout.addLayout(color_settings_layout)
         
         clear_channels_btn = QPushButton("清空所有通道")
         clear_channels_btn.clicked.connect(self.clear_all_channels)
@@ -406,44 +401,66 @@ class MainWindow(QMainWindow):
             waveform_data = {k: v for k, v in data_dict.items() if k != 'timestamp'}
             self.waveform_widget.update_channels(waveform_data, timestamp)
     
-    def set_channel_colors(self):
-        """设置通道颜色
+    def show_channel_context_menu(self, position):
+        """显示通道右键菜单
         
-        让用户可以自定义每个通道的颜色。
+        Args:
+            position: 鼠标位置
         """
         channels = self.waveform_widget.get_all_channels()
         
         if not channels:
-            QMessageBox.information(self, "提示", "当前没有通道，请先连接数据源")
             return
         
-        # 为每个通道设置颜色
+        # 创建右键菜单
+        menu = QMenu(self)
+        
+        # 添加通道颜色设置菜单项
+        color_menu = menu.addMenu("设置通道颜色")
+        
+        # 为每个通道添加子菜单项
         for channel_name in channels:
-            # 获取当前颜色
-            if channel_name in self.waveform_widget.channels:
-                current_color = self.waveform_widget.channels[channel_name]['color']
-                
-                # 如果是RGB元组，转换为QColor
-                if isinstance(current_color, tuple):
-                    from PyQt5.QtGui import QColor
-                    qcolor = QColor(*current_color)
-                    initial_color = qcolor
-                else:
-                    from PyQt5.QtGui import QColor
-                    initial_color = QColor(current_color)
-                
-                # 显示颜色选择对话框
-                color = QColorDialog.getColor(initial_color, self, f"选择通道 '{channel_name}' 的颜色")
-                
-                if color.isValid():
-                    # 转换为RGB元组
-                    rgb = (color.red(), color.green(), color.blue())
-                    
-                    # 更新通道颜色
-                    self.waveform_widget.update_channel_color(channel_name, rgb)
-                    print(f"通道 '{channel_name}' 颜色已更新为: {color.name()} ({rgb})")
-                else:
-                    print(f"通道 '{channel_name}' 颜色设置已取消")
+            action = QAction(channel_name, self)
+            action.triggered.connect(lambda checked, name=channel_name: self.set_channel_color(name))
+            color_menu.addAction(action)
+        
+        # 显示菜单
+        menu.exec_(self.channels_label.mapToGlobal(position))
+    
+    def set_channel_color(self, channel_name: str):
+        """设置指定通道的颜色
+        
+        Args:
+            channel_name: 通道名称
+        """
+        if channel_name not in self.waveform_widget.channels:
+            QMessageBox.warning(self, "错误", f"通道 '{channel_name}' 不存在")
+            return
+        
+        # 获取当前颜色
+        current_color = self.waveform_widget.channels[channel_name]['color']
+        
+        # 如果是RGB元组，转换为QColor
+        if isinstance(current_color, tuple):
+            from PyQt5.QtGui import QColor
+            qcolor = QColor(*current_color)
+            initial_color = qcolor
+        else:
+            from PyQt5.QtGui import QColor
+            initial_color = QColor(current_color)
+        
+        # 显示颜色选择对话框
+        color = QColorDialog.getColor(initial_color, self, f"选择通道 '{channel_name}' 的颜色")
+        
+        if color.isValid():
+            # 转换为RGB元组
+            rgb = (color.red(), color.green(), color.blue())
+            
+            # 更新通道颜色
+            self.waveform_widget.update_channel_color(channel_name, rgb)
+            print(f"通道 '{channel_name}' 颜色已更新为: {color.name()} ({rgb})")
+        else:
+            print(f"通道 '{channel_name}' 颜色设置已取消")
     
     def closeEvent(self, event):
         """关闭事件"""
