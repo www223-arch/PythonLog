@@ -1,0 +1,21 @@
+# Python上位机项目依赖包
+# 使用 pip install -r requirements.txt 安装所有依赖
+
+# GUI框架
+PyQt5>=5.15.0
+PyQtGraph>=0.13.0
+
+# 数据处理
+numpy>=1.24.0
+pandas>=2.0.0
+
+# 通信模块
+pyserial>=3.5
+
+# 开发工具
+pytest>=7.4.0      # 测试框架
+black>=23.7.0        # 代码格式化
+flake8>=6.0.0      # 代码检查
+
+# 其他工具
+python-dotenv>=1.0.0  # 环境变量管理
