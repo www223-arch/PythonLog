@@ -108,7 +108,7 @@ class MainWindow(QMainWindow):
     
     def init_ui(self):
         """初始化UI"""
-        self.setWindowTitle("Python上位机 - UDP数据采集")
+        self.setWindowTitle("Python上位机 - 数据采集")
         self.setGeometry(100, 100, 1400, 800)
         
         # 创建中央控件
@@ -142,10 +142,6 @@ class MainWindow(QMainWindow):
         # 设置子控件的最小尺寸
         self.waveform_widget.setMinimumSize(QSize(200, 200))  # 波形显示最小尺寸
         raw_data_panel.setMinimumSize(QSize(200, 100))  # 原始数据接收区最小尺寸
-        
-        # 设置最小尺寸，防止一个被压缩消失
-        right_splitter.setChildrenCollapsible(False)  # 禁止折叠
-        right_splitter.setHandleWidth(5)  # 设置分割线宽度
         
         # 添加到主布局
         main_layout.addWidget(control_panel, 1)
@@ -209,11 +205,6 @@ class MainWindow(QMainWindow):
         serial_layout.addRow("波特率:", self.baudrate_combo)
         serial_layout.addRow("通信协议:", self.protocol_combo)
         
-        # 串口文本协议的数据校验头
-        self.serial_header_edit = QLineEdit("DATA")
-        self.serial_header_edit.setPlaceholderText("数据校验头")
-        serial_layout.addRow("数据校验头:", self.serial_header_edit)
-        
         # 隐藏串口配置组
         self.serial_group.setVisible(False)
         
@@ -221,7 +212,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.serial_group)
         
         # 数据校验头配置（公用的）
-        header_group = QGroupBox("数据校验头配置")
+        self.header_group = QGroupBox("数据校验头配置")
         header_layout = QFormLayout()
         
         self.header_edit = QLineEdit("DATA")
@@ -229,8 +220,8 @@ class MainWindow(QMainWindow):
         
         header_layout.addRow("数据校验头:", self.header_edit)
         
-        header_group.setLayout(header_layout)
-        layout.addWidget(header_group)
+        self.header_group.setLayout(header_layout)
+        layout.addWidget(self.header_group)
         
         # 连接控制组（公用的）
         control_group = QGroupBox("连接控制")
@@ -399,6 +390,7 @@ class MainWindow(QMainWindow):
         self.auto_save_enabled = False
         self.last_data_time = None  # 记录最后接收数据的时间
         self.data_timeout = 1000  # 数据超时时间（毫秒）
+        self.is_flashing = False  # 标志：按钮是否在闪烁
         
         # 数据更新定时器
         self.data_timer = QTimer()
@@ -428,6 +420,7 @@ class MainWindow(QMainWindow):
             self.status_label.setStyleSheet("color: red;")
             self.connect_btn.set_color(QColor(100, 100, 100))  # 灰色
             self.connect_btn.stop_flashing()
+            self.is_flashing = False
             self.pause_btn.setEnabled(False)
             # 启用数据源类型选择
             self.source_type_combo.setEnabled(True)
@@ -471,19 +464,28 @@ class MainWindow(QMainWindow):
                     baudrate = int(self.baudrate_combo.currentText())
                     protocol_text = self.protocol_combo.currentText()
                     protocol = 'text' if protocol_text == '文本协议' else 'binary'
-                    data_source = create_serial_source(serial_port, baudrate, protocol, header)
+                    # 根据协议类型使用不同的数据校验头
+                    if protocol == 'text':
+                        serial_header = header  # 文本协议使用公用的数据校验头
+                    else:
+                        serial_header = ''  # 二进制协议不使用数据校验头
+                    data_source = create_serial_source(serial_port, baudrate, protocol, serial_header)
                     # 设置原始数据回调函数
                     data_source.set_raw_data_callback(self.on_raw_data_received)
                     success = self.data_source_manager.set_source(data_source)
                     
                     if success:
-                        print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {header}")
+                        if protocol == 'text':
+                            print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {serial_header}")
+                        else:
+                            print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}")
                 
                 if success:
                     self.status_label.setText("已连接")
                     self.status_label.setStyleSheet("color: green;")
                     self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
                     # 不开始闪烁，等收到数据后再闪烁
+                    self.is_flashing = False
                     self.pause_btn.setEnabled(True)
                     # 禁用数据源类型选择
                     self.source_type_combo.setEnabled(False)
@@ -519,10 +521,12 @@ class MainWindow(QMainWindow):
         if source_type == "UDP":
             self.udp_group.setVisible(True)
             self.serial_group.setVisible(False)
+            # UDP模式：启用数据校验头配置
+            self.header_group.setEnabled(True)
         else:
             self.udp_group.setVisible(False)
             self.serial_group.setVisible(True)
-            # 根据协议类型控制数据校验头输入框的显示/隐藏
+            # 根据协议类型控制数据校验头配置的启用/禁用
             self.on_protocol_changed(self.protocol_combo.currentText())
     
     def refresh_serial_ports(self):
@@ -569,11 +573,11 @@ class MainWindow(QMainWindow):
             protocol_text: 协议文本（文本协议或二进制协议）
         """
         if protocol_text == "文本协议":
-            # 文本协议：显示数据校验头
-            self.serial_header_edit.setVisible(True)
+            # 文本协议：启用数据校验头配置
+            self.header_group.setEnabled(True)
         else:
-            # 二进制协议：隐藏数据校验头
-            self.serial_header_edit.setVisible(False)
+            # 二进制协议：禁用数据校验头配置
+            self.header_group.setEnabled(False)
     
     def browse_save_path(self):
         """浏览保存路径"""
@@ -721,14 +725,16 @@ class MainWindow(QMainWindow):
             if header_mismatch_count > 0:
                 self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
                 self.connect_btn.start_flashing(100)  # 蓝色快速闪烁
+                self.is_flashing = True
                 self.data_status_label.setText("数据状态: 正常接收")
                 self.data_status_label.setStyleSheet("color: green;")
             
             # 收到数据，开始蓝色快速闪烁
-            if self.data_count == 0:
-                # 第一次收到数据，开始闪烁
+            if not self.is_flashing:
+                # 如果按钮不在闪烁，开始闪烁
                 self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
                 self.connect_btn.start_flashing(100)  # 快速闪烁（200ms）
+                self.is_flashing = True
                 self.data_status_label.setText("数据状态: 正常接收")
                 self.data_status_label.setStyleSheet("color: green;")
             
@@ -812,6 +818,7 @@ class MainWindow(QMainWindow):
                 # 数据超时，停止闪烁，恢复蓝色但不闪烁
                 self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
                 self.connect_btn.stop_flashing()
+                self.is_flashing = False
                 self.data_status_label.setText("数据状态: 数据停止")
                 self.data_status_label.setStyleSheet("color: #666;")
     
