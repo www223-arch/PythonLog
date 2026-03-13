@@ -31,14 +31,57 @@ python src/main.py
 
 打开另一个终端，发送测试数据到上位机：
 
+**基本用法**：
 ```bash
-# 发送正弦波数据（默认3通道，1Hz频率，持续10秒）
-python tools/udp_sender.py --type sine --channels 3 --frequency 1.0 --duration 10
-
-# 发送随机数据
-python tools/udp_sender.py --type random --channels 3 --duration 10
-# 查看帮助
+# 查看帮助信息
 python tools/udp_sender.py --help
+```
+
+**发送正弦波数据**：
+```bash
+# 发送3通道正弦波，50Hz采样率，持续10秒
+python tools/udp_sender.py --type sine --channels 3 --frequency 1.0 --duration 10 --rate 50
+
+# 发送3通道正弦波，使用自定义通道名称
+python tools/udp_sender.py --type sine --channels 3 --frequency 1.0 --duration 10 --names 电压 电流 温度
+```
+
+**发送随机数据**：
+```bash
+# 发送3通道随机数据，持续10秒
+python tools/udp_sender.py --type random --channels 3 --duration 10
+# 发送3通道随机数据，使用自定义通道名称
+python tools/udp_sender.py --type random --channels 3 --duration 10 --names 电压 电流 温度
+```
+
+**参数说明**：
+- `--host`: 目标主机地址（默认：127.0.0.1）
+- `--port`: 目标端口（默认：8888）
+- `--type`: 数据类型，`sine`（正弦波）或 `random`（随机数据）
+- `--channels`: 通道数量（默认：3）
+- `--frequency`: 正弦波频率（Hz，默认：1.0，仅正弦波有效）
+- `--amplitude`: 正弦波振幅（默认：1.0，仅正弦波有效）
+- `--duration`: 发送持续时间（秒，默认：10.0）
+- `--rate`: 采样率（Hz，默认：50，建议50-100Hz）
+- `--names`: 自定义通道名称，用空格分隔（例如：`--names 电压 电流 温度`）
+- `--header`: 数据校验头（默认：DATA）
+
+**示例**：
+```bash
+# 示例1：发送正弦波数据（默认配置）
+python tools/udp_sender.py --type sine
+
+# 示例2：发送随机数据（默认配置）
+python tools/udp_sender.py --type random
+
+# 示例3：发送正弦波数据，自定义参数
+python tools/udp_sender.py --type sine --channels 2 --frequency 2.0 --amplitude 1.5 --duration 20 --rate 100
+
+# 示例4：发送随机数据，自定义通道名称
+python tools/udp_sender.py --type random --channels 3 --duration 15 --names 电压 电流 温度 --header DATA
+
+# 示例5：发送到指定主机和端口
+python tools/udp_sender.py --type sine --host 192.168.1.100 --port 9999 --duration 5
 ```
 
 ## 📖 使用说明

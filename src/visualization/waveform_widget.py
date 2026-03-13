@@ -610,6 +610,32 @@ class WaveformWidget(QWidget):
         """
         self.sample_rate = sample_rate
     
+    def update_channel_color(self, name: str, color: tuple) -> None:
+        """更新通道颜色
+        
+        Args:
+            name: 通道名称
+            color: 颜色（RGB元组）
+        """
+        if name in self.channels:
+            channel = self.channels[name]
+            
+            # 更新颜色
+            channel['color'] = color
+            
+            # 更新曲线颜色
+            pen = pg.mkPen(color=color, width=channel['width'])
+            channel['curve'].setPen(pen)
+            
+            # 更新频域曲线颜色（如果存在）
+            if name in self.freq_curves:
+                self.freq_curves[name]['color'] = color
+                freq_curve = self.freq_curves[name]['curve']
+                freq_pen = pg.mkPen(color=color, width=2)
+                freq_curve.setPen(freq_pen)
+            
+            print(f"通道 '{name}' 颜色已更新为: {color}")
+    
     def get_channel_data(self, name: str) -> Optional[Tuple[List[float], List[float]]]:
         """获取通道数据
         
