@@ -11,7 +11,8 @@ import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut)
+                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut, QComboBox, QTextEdit, QSplitter)
+from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize
 from PyQt5.QtCore import Qt, QTimer, QDateTime
 from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient, QKeySequence
 
@@ -117,12 +118,38 @@ class MainWindow(QMainWindow):
         # 左侧控制面板
         control_panel = self.create_control_panel()
         
-        # 右侧波形显示
+        # 右侧面板（使用QSplitter支持调整大小）
+        right_splitter = QSplitter(Qt.Vertical)
+        
+        # 右侧上部：波形显示
         self.waveform_widget = WaveformWidget()
+        
+        # 右侧下部：原始数据接收区
+        raw_data_panel = self.create_raw_data_panel()
+        
+        # 添加到分割器
+        right_splitter.addWidget(self.waveform_widget)
+        right_splitter.addWidget(raw_data_panel)
+        
+        # 设置初始比例（波形显示占70%，原始数据接收区占30%）
+        right_splitter.setStretchFactor(0, 7)
+        right_splitter.setStretchFactor(1, 3)
+        
+        # 设置最小尺寸，防止一个被压缩消失
+        right_splitter.setChildrenCollapsible(False)  # 禁止折叠
+        right_splitter.setHandleWidth(5)  # 设置分割线宽度
+        
+        # 设置子控件的最小尺寸
+        self.waveform_widget.setMinimumSize(QSize(200, 200))  # 波形显示最小尺寸
+        raw_data_panel.setMinimumSize(QSize(200, 100))  # 原始数据接收区最小尺寸
+        
+        # 设置最小尺寸，防止一个被压缩消失
+        right_splitter.setChildrenCollapsible(False)  # 禁止折叠
+        right_splitter.setHandleWidth(5)  # 设置分割线宽度
         
         # 添加到主布局
         main_layout.addWidget(control_panel, 1)
-        main_layout.addWidget(self.waveform_widget, 3)
+        main_layout.addWidget(right_splitter, 3)
         
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
@@ -138,18 +165,76 @@ class MainWindow(QMainWindow):
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
         
+        # 数据源类型选择
+        source_group = QGroupBox("数据源")
+        source_layout = QFormLayout()
+        
+        self.source_type_combo = QComboBox()
+        self.source_type_combo.addItems(["UDP", "串口"])
+        self.source_type_combo.currentTextChanged.connect(self.on_source_type_changed)
+        source_layout.addRow("数据源类型:", self.source_type_combo)
+        
+        source_group.setLayout(source_layout)
+        layout.addWidget(source_group)
+        
         # UDP配置组
-        udp_group = QGroupBox("UDP配置")
+        self.udp_group = QGroupBox("UDP配置")
         udp_layout = QFormLayout()
         
         self.host_edit = QLineEdit("0.0.0.0")
         self.port_edit = QLineEdit("8888")
-        self.header_edit = QLineEdit("DATA")
-        self.header_edit.setPlaceholderText("数据校验头")
         
         udp_layout.addRow("主机地址:", self.host_edit)
         udp_layout.addRow("端口:", self.port_edit)
-        udp_layout.addRow("数据校验头:", self.header_edit)
+        
+        self.udp_group.setLayout(udp_layout)
+        layout.addWidget(self.udp_group)
+        
+        # 串口配置组
+        self.serial_group = QGroupBox("串口配置")
+        serial_layout = QFormLayout()
+        
+        self.serial_port_combo = QComboBox()
+        self.refresh_serial_ports()
+        self.serial_port_combo.showPopup = self.refresh_serial_ports_and_show_popup
+        self.baudrate_combo = QComboBox()
+        self.baudrate_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
+        self.baudrate_combo.setCurrentText("115200")
+        self.protocol_combo = QComboBox()
+        self.protocol_combo.addItems(["文本协议", "二进制协议"])
+        self.protocol_combo.setCurrentText("文本协议")
+        self.protocol_combo.currentTextChanged.connect(self.on_protocol_changed)
+        
+        serial_layout.addRow("串口号:", self.serial_port_combo)
+        serial_layout.addRow("波特率:", self.baudrate_combo)
+        serial_layout.addRow("通信协议:", self.protocol_combo)
+        
+        # 串口文本协议的数据校验头
+        self.serial_header_edit = QLineEdit("DATA")
+        self.serial_header_edit.setPlaceholderText("数据校验头")
+        serial_layout.addRow("数据校验头:", self.serial_header_edit)
+        
+        # 隐藏串口配置组
+        self.serial_group.setVisible(False)
+        
+        self.serial_group.setLayout(serial_layout)
+        layout.addWidget(self.serial_group)
+        
+        # 数据校验头配置（公用的）
+        header_group = QGroupBox("数据校验头配置")
+        header_layout = QFormLayout()
+        
+        self.header_edit = QLineEdit("DATA")
+        self.header_edit.setPlaceholderText("数据校验头")
+        
+        header_layout.addRow("数据校验头:", self.header_edit)
+        
+        header_group.setLayout(header_layout)
+        layout.addWidget(header_group)
+        
+        # 连接控制组（公用的）
+        control_group = QGroupBox("连接控制")
+        control_layout = QVBoxLayout()
         
         # 圆形连接按钮
         button_layout = QHBoxLayout()
@@ -157,21 +242,21 @@ class MainWindow(QMainWindow):
         self.connect_btn.clicked.connect(self.toggle_connection)
         button_layout.addWidget(self.connect_btn)
         button_layout.addStretch()
-        udp_layout.addRow(button_layout)
+        control_layout.addLayout(button_layout)
         
         # 数据状态标签
         self.data_status_label = QLabel("数据状态: 无数据")
         self.data_status_label.setStyleSheet("color: #666;")
-        udp_layout.addRow(self.data_status_label)
+        control_layout.addWidget(self.data_status_label)
         
         # 暂停按钮
         self.pause_btn = QPushButton("暂停")
         self.pause_btn.clicked.connect(self.toggle_pause)
         self.pause_btn.setEnabled(False)
-        udp_layout.addRow(self.pause_btn)
+        control_layout.addWidget(self.pause_btn)
         
-        udp_group.setLayout(udp_layout)
-        layout.addWidget(udp_group)
+        control_group.setLayout(control_layout)
+        layout.addWidget(control_group)
         
         # 通道配置组
         channel_group = QGroupBox("通道配置")
@@ -228,8 +313,6 @@ class MainWindow(QMainWindow):
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
         
-
-        
         # 数据保存控制
         save_group = QGroupBox("数据保存")
         save_layout = QVBoxLayout()
@@ -260,6 +343,51 @@ class MainWindow(QMainWindow):
         exit_btn = QPushButton("退出")
         exit_btn.clicked.connect(self.close)
         layout.addWidget(exit_btn)
+        
+        panel.setLayout(layout)
+        return panel
+    
+    def create_raw_data_panel(self):
+        """创建原始数据接收区面板"""
+        panel = QWidget()
+        layout = QVBoxLayout()
+        
+        # 原始数据接收区
+        raw_data_group = QGroupBox("原始数据接收区")
+        raw_data_layout = QVBoxLayout()
+        
+        # 编码格式和显示格式选择
+        format_layout = QHBoxLayout()
+        
+        encoding_label = QLabel("编码格式:")
+        self.encoding_combo = QComboBox()
+        self.encoding_combo.addItems(["UTF-8", "GBK"])
+        self.encoding_combo.setCurrentText("UTF-8")
+        
+        display_label = QLabel("显示格式:")
+        self.display_format_combo = QComboBox()
+        self.display_format_combo.addItems(["文本", "十六进制"])
+        self.display_format_combo.setCurrentText("文本")
+        
+        format_layout.addWidget(encoding_label)
+        format_layout.addWidget(self.encoding_combo)
+        format_layout.addWidget(display_label)
+        format_layout.addWidget(self.display_format_combo)
+        raw_data_layout.addLayout(format_layout)
+        
+        # 原始数据显示区域
+        self.raw_data_text = QTextEdit()
+        self.raw_data_text.setReadOnly(True)
+        self.raw_data_text.setStyleSheet("font-family: Consolas, monospace; font-size: 10pt;")
+        raw_data_layout.addWidget(self.raw_data_text)
+        
+        # 清空按钮
+        clear_raw_data_btn = QPushButton("清空原始数据")
+        clear_raw_data_btn.clicked.connect(self.clear_raw_data)
+        raw_data_layout.addWidget(clear_raw_data_btn)
+        
+        raw_data_group.setLayout(raw_data_layout)
+        layout.addWidget(raw_data_group)
         
         panel.setLayout(layout)
         return panel
@@ -301,6 +429,8 @@ class MainWindow(QMainWindow):
             self.connect_btn.set_color(QColor(100, 100, 100))  # 灰色
             self.connect_btn.stop_flashing()
             self.pause_btn.setEnabled(False)
+            # 启用数据源类型选择
+            self.source_type_combo.setEnabled(True)
             self.data_count = 0
             self.data_count_label.setText("接收数据: 0")
             self.save_file_label.setText("保存文件: 无")
@@ -309,19 +439,45 @@ class MainWindow(QMainWindow):
             self.data_status_label.setStyleSheet("color: #666;")
             self.save_btn.setText("开始保存")
             self.auto_save_enabled = False
-            print("UDP连接已断开")
+            self.clear_raw_data()  # 清空原始数据接收区
+            print("数据源已断开")
         else:
             # 连接
             try:
-                host = self.host_edit.text()
-                port = int(self.port_edit.text())
+                source_type = self.source_type_combo.currentText()
                 header = self.header_edit.text().strip() or 'DATA'
                 
                 # 设置数据校验头
                 self.data_source_manager.set_data_header(header)
                 
-                udp_source = create_udp_source(host, port)
-                success = self.data_source_manager.set_source(udp_source)
+                if source_type == "UDP":
+                    # UDP数据源
+                    host = self.host_edit.text()
+                    port = int(self.port_edit.text())
+                    data_source = create_udp_source(host, port)
+                    # 设置原始数据回调函数
+                    data_source.set_raw_data_callback(self.on_raw_data_received)
+                    success = self.data_source_manager.set_source(data_source)
+                    
+                    if success:
+                        print(f"已连接到UDP {host}:{port}，数据校验头: {header}")
+                else:
+                    # 串口数据源
+                    from data_sources.manager import create_serial_source
+                    serial_port = self.serial_port_combo.currentData()  # 获取实际的串口号（如COM1）
+                    if not serial_port:
+                        QMessageBox.warning(self, "错误", "请选择有效的串口")
+                        return
+                    baudrate = int(self.baudrate_combo.currentText())
+                    protocol_text = self.protocol_combo.currentText()
+                    protocol = 'text' if protocol_text == '文本协议' else 'binary'
+                    data_source = create_serial_source(serial_port, baudrate, protocol, header)
+                    # 设置原始数据回调函数
+                    data_source.set_raw_data_callback(self.on_raw_data_received)
+                    success = self.data_source_manager.set_source(data_source)
+                    
+                    if success:
+                        print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {header}")
                 
                 if success:
                     self.status_label.setText("已连接")
@@ -329,6 +485,8 @@ class MainWindow(QMainWindow):
                     self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
                     # 不开始闪烁，等收到数据后再闪烁
                     self.pause_btn.setEnabled(True)
+                    # 禁用数据源类型选择
+                    self.source_type_combo.setEnabled(False)
                     
                     # 清空旧通道
                     self.waveform_widget.clear_all()
@@ -345,14 +503,77 @@ class MainWindow(QMainWindow):
                             save_file = self.data_source_manager.get_save_file()
                             self.save_file_label.setText(f"保存文件: {save_file}")
                             self.auto_save_enabled = True
-                    
-                    print(f"已连接到 {host}:{port}，数据校验头: {header}")
                 else:
                     QMessageBox.warning(self, "失败", "连接失败，请检查配置")
             except ValueError:
-                QMessageBox.warning(self, "错误", "请输入有效的端口号")
+                QMessageBox.warning(self, "错误", "请输入有效的端口号或波特率")
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"连接失败: {str(e)}")
+    
+    def on_source_type_changed(self, source_type: str):
+        """数据源类型改变事件处理
+        
+        Args:
+            source_type: 数据源类型（UDP或串口）
+        """
+        if source_type == "UDP":
+            self.udp_group.setVisible(True)
+            self.serial_group.setVisible(False)
+        else:
+            self.udp_group.setVisible(False)
+            self.serial_group.setVisible(True)
+            # 根据协议类型控制数据校验头输入框的显示/隐藏
+            self.on_protocol_changed(self.protocol_combo.currentText())
+    
+    def refresh_serial_ports(self):
+        """刷新串口列表，扫描所有可用的COM端口"""
+        try:
+            import serial.tools.list_ports
+            
+            # 获取所有可用的串口
+            ports = serial.tools.list_ports.comports()
+            
+            # 清空当前列表
+            self.serial_port_combo.clear()
+            
+            if ports:
+                # 添加所有可用的串口
+                for port in ports:
+                    port_info = f"{port.device} - {port.description}"
+                    self.serial_port_combo.addItem(port_info, port.device)
+                print(f"扫描到 {len(ports)} 个串口")
+            else:
+                # 没有找到串口
+                self.serial_port_combo.addItem("无可用串口", "")
+                print("未扫描到可用串口")
+        except ImportError:
+            # pyserial未安装
+            self.serial_port_combo.clear()
+            self.serial_port_combo.addItem("请安装pyserial库", "")
+            print("错误: 未安装pyserial库，请运行: pip install pyserial")
+        except Exception as e:
+            # 扫描失败
+            self.serial_port_combo.clear()
+            self.serial_port_combo.addItem("扫描失败", "")
+            print(f"扫描串口失败: {e}")
+    
+    def refresh_serial_ports_and_show_popup(self):
+        """刷新串口列表并显示下拉框"""
+        self.refresh_serial_ports()
+        QComboBox.showPopup(self.serial_port_combo)
+    
+    def on_protocol_changed(self, protocol_text: str):
+        """串口协议改变事件处理
+        
+        Args:
+            protocol_text: 协议文本（文本协议或二进制协议）
+        """
+        if protocol_text == "文本协议":
+            # 文本协议：显示数据校验头
+            self.serial_header_edit.setVisible(True)
+        else:
+            # 二进制协议：隐藏数据校验头
+            self.serial_header_edit.setVisible(False)
     
     def browse_save_path(self):
         """浏览保存路径"""
@@ -385,6 +606,52 @@ class MainWindow(QMainWindow):
         self.waveform_widget.clear_all()
         self.data_count = 0
         self.data_count_label.setText("接收数据: 0")
+    
+    def on_raw_data_received(self, data: bytes):
+        """原始数据接收回调
+        
+        Args:
+            data: 原始字节数据
+        """
+        # 暂停时不刷新原始数据栏
+        if self.waveform_widget.is_paused:
+            return
+        
+        try:
+            encoding = self.encoding_combo.currentText().replace('-', '').lower()
+            display_format = self.display_format_combo.currentText()
+            
+            if display_format == "文本":
+                # 文本格式显示
+                try:
+                    text = data.decode(encoding)
+                    self.raw_data_text.append(text)
+                except UnicodeDecodeError:
+                    # 解码失败，显示错误信息
+                    self.raw_data_text.append(f"[解码失败: {data.hex()}]\n")
+            else:
+                # 十六进制格式显示
+                hex_str = data.hex(' ').upper()
+                self.raw_data_text.append(f"{hex_str}\n")
+            
+            # 限制显示行数，避免内存占用过大
+            max_lines = 1000
+            document = self.raw_data_text.document()
+            if document.blockCount() > max_lines:
+                cursor = self.raw_data_text.textCursor()
+                cursor.movePosition(cursor.Start)
+                cursor.movePosition(cursor.Down, cursor.KeepAnchor, document.blockCount() - max_lines)
+                cursor.removeSelectedText()
+            
+            # 自动滚动到底部
+            scrollbar = self.raw_data_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        except Exception as e:
+            print(f"显示原始数据失败: {e}")
+    
+    def clear_raw_data(self):
+        """清空原始数据"""
+        self.raw_data_text.clear()
     
     def apply_buffer_size(self):
         """应用缓存区大小设置"""

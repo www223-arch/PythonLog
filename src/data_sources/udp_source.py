@@ -30,6 +30,7 @@ class UDPDataSource(DataSource):
         self.buffer_size = 1024
         self.data_format = 'f'  # 默认浮点数格式
         self.last_raw_text = None  # 存储原始文本，用于提取通道名称
+        self.raw_data_callback = None  # 原始数据回调函数
     
     def connect(self) -> bool:
         """连接UDP数据源
@@ -60,6 +61,9 @@ class UDPDataSource(DataSource):
         
         try:
             data, addr = self.socket.recvfrom(self.buffer_size)
+            # 调用原始数据回调
+            if self.raw_data_callback:
+                self.raw_data_callback(data)
             return self._parse_data(data)
         except socket.timeout:
             return None
@@ -201,3 +205,11 @@ class UDPDataSource(DataSource):
         self.buffer_size = size
         if self.socket:
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, size)
+    
+    def set_raw_data_callback(self, callback) -> None:
+        """设置原始数据回调函数
+        
+        Args:
+            callback: 回调函数，接收原始字节数据
+        """
+        self.raw_data_callback = callback

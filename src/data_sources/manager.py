@@ -280,3 +280,19 @@ def create_udp_source(host: str = '0.0.0.0', port: int = 8888) -> UDPDataSource:
         UDP数据源对象
     """
     return UDPDataSource(host, port)
+
+
+def create_serial_source(port: str = 'COM1', baudrate: int = 115200, protocol: str = 'text', data_header: str = 'DATA'):
+    """创建串口数据源
+    
+    Args:
+        port: 串口名称
+        baudrate: 波特率
+        protocol: 协议类型，'text'为文本协议，'binary'为二进制协议
+        data_header: 数据校验头，用于文本协议
+    
+    Returns:
+        串口数据源对象
+    """
+    from .serial_source import SerialDataSource
+    return SerialDataSource(port, baudrate, protocol, data_header)
