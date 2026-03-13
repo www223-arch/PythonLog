@@ -27,6 +27,9 @@ class DataSourceManager:
         self.timestamps = []  # 存储时间戳
         self.data_header = 'DATA'  # 数据校验头，默认'DATA'
         self.header_enabled = True  # 是否启用数据校验头验证
+        self.header_mismatch_count = 0  # 校验头不匹配计数器
+        self.last_valid_data_time = None  # 最后一次有效数据的时间
+
  
     
     def set_source(self, source: DataSource) -> bool:
@@ -72,13 +75,17 @@ class DataSourceManager:
         if data is not None and len(data) > 0:
             # 解析数据：第一个元素是数据校验头，第二个是时间戳，后面是通道数据
             header = str(data[0])
+            timestamp = float(data[1])
             
             # 验证数据校验头
             if self.header_enabled and header != self.data_header:
+                self.header_mismatch_count += 1
                 print(f"[警告] 数据校验头不匹配: 期望'{self.data_header}', 收到'{header}' - 丢弃数据")
                 return None
             
-            timestamp = float(data[1])
+            # 重置校验头不匹配计数器
+            self.header_mismatch_count = 0
+            self.last_valid_data_time = timestamp
             
             # 构建数据字典
             data_dict = {'header': header, 'timestamp': timestamp}
@@ -247,6 +254,18 @@ class DataSourceManager:
             True为启用，False为禁用
         """
         return self.header_enabled
+    
+    def get_header_mismatch_count(self) -> int:
+        """获取校验头不匹配的次数
+        
+        Returns:
+            校验头不匹配的次数
+        """
+        return self.header_mismatch_count
+    
+    def reset_header_mismatch_count(self) -> None:
+        """重置校验头不匹配计数器"""
+        self.header_mismatch_count = 0
 
 
 # 便捷函数：创建UDP数据源并连接

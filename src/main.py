@@ -12,11 +12,88 @@ import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                              QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction)
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QTimer, QDateTime
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient
 
 from data_sources.manager import DataSourceManager, create_udp_source
 from visualization.waveform_widget import WaveformWidget
+
+
+class CircularButton(QPushButton):
+    """圆形按钮，支持颜色和闪烁状态"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(40, 40)  # 进一步减小尺寸
+        self._color = QColor(100, 100, 100)  # 默认灰色
+        self._is_flashing = False
+        self._flash_state = False
+        self._flash_timer = QTimer(self)
+        self._flash_timer.timeout.connect(self._toggle_flash)
+    
+    def set_color(self, color: QColor):
+        """设置按钮颜色
+        
+        Args:
+            color: QColor对象
+        """
+        self._color = color
+        self.update()
+    
+    def start_flashing(self, interval: int = 500):
+        """开始闪烁
+        
+        Args:
+            interval: 闪烁间隔（毫秒）
+        """
+        self._is_flashing = True
+        self._flash_timer.start(interval)
+    
+    def stop_flashing(self):
+        """停止闪烁"""
+        self._is_flashing = False
+        self._flash_timer.stop()
+        self._flash_state = False
+        self.update()
+    
+    def _toggle_flash(self):
+        """切换闪烁状态"""
+        self._flash_state = not self._flash_state
+        self.update()
+    
+    def paintEvent(self, event):
+        """重绘按钮"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 绘制圆形
+        center_x = self.width() // 2
+        center_y = self.height() // 2
+        radius = min(self.width(), self.height()) // 2 - 5
+        
+        # 如果正在闪烁，根据闪烁状态调整颜色
+        if self._is_flashing:
+            if self._flash_state:
+                # 闪烁时使用更亮的颜色
+                color = QColor(
+                    min(255, self._color.red() + 50),
+                    min(255, self._color.green() + 50),
+                    min(255, self._color.blue() + 50)
+                )
+            else:
+                color = self._color
+        else:
+            color = self._color
+        
+        # 创建渐变效果
+        gradient = QRadialGradient(center_x, center_y, radius)
+        gradient.setColorAt(0, color)
+        gradient.setColorAt(1, color.darker(150))
+        
+        # 绘制圆形
+        painter.setBrush(QBrush(gradient))
+        painter.setPen(Qt.NoPen)  # 去掉边框
+        painter.drawEllipse(center_x - radius, center_y - radius, radius * 2, radius * 2)
 
 
 class MainWindow(QMainWindow):
@@ -74,10 +151,18 @@ class MainWindow(QMainWindow):
         udp_layout.addRow("端口:", self.port_edit)
         udp_layout.addRow("数据校验头:", self.header_edit)
         
-        self.connect_btn = QPushButton("连接")
+        # 圆形连接按钮
+        button_layout = QHBoxLayout()
+        self.connect_btn = CircularButton()
         self.connect_btn.clicked.connect(self.toggle_connection)
+        button_layout.addWidget(self.connect_btn)
+        button_layout.addStretch()
+        udp_layout.addRow(button_layout)
         
-        udp_layout.addRow(self.connect_btn)
+        # 数据状态标签
+        self.data_status_label = QLabel("数据状态: 无数据")
+        self.data_status_label.setStyleSheet("color: #666;")
+        udp_layout.addRow(self.data_status_label)
         
         # 暂停按钮
         self.pause_btn = QPushButton("暂停")
@@ -96,6 +181,8 @@ class MainWindow(QMainWindow):
         self.channels_label.setStyleSheet("color: #666;")
         self.channels_label.setContextMenuPolicy(Qt.CustomContextMenu)
         self.channels_label.customContextMenuRequested.connect(self.show_channel_context_menu)
+        self.channels_label.setFixedHeight(30)  # 固定高度，防止比例变化
+        self.channels_label.setWordWrap(True)  # 允许换行
         
         channel_layout.addWidget(self.channels_label)
         
@@ -181,11 +268,18 @@ class MainWindow(QMainWindow):
         self.data_source_manager = DataSourceManager()
         self.data_count = 0
         self.auto_save_enabled = False
+        self.last_data_time = None  # 记录最后接收数据的时间
+        self.data_timeout = 1000  # 数据超时时间（毫秒）
         
         # 数据更新定时器
         self.data_timer = QTimer()
         self.data_timer.timeout.connect(self.update_data)
         self.data_timer.start(20)  # 20ms更新一次（50Hz）
+        
+        # 超时检测定时器
+        self.timeout_timer = QTimer()
+        self.timeout_timer.timeout.connect(self.check_data_timeout)
+        self.timeout_timer.start(100)  # 100ms检测一次超时
     
     def init_connections(self):
         """初始化连接"""
@@ -199,12 +293,15 @@ class MainWindow(QMainWindow):
             self.data_source_manager.disconnect()
             self.status_label.setText("未连接")
             self.status_label.setStyleSheet("color: red;")
-            self.connect_btn.setText("连接")
+            self.connect_btn.set_color(QColor(100, 100, 100))  # 灰色
+            self.connect_btn.stop_flashing()
             self.pause_btn.setEnabled(False)
             self.data_count = 0
             self.data_count_label.setText("接收数据: 0")
             self.save_file_label.setText("保存文件: 无")
             self.channels_label.setText("自动检测通道...")
+            self.data_status_label.setText("数据状态: 无数据")
+            self.data_status_label.setStyleSheet("color: #666;")
             self.save_btn.setText("开始保存")
             self.auto_save_enabled = False
             print("UDP连接已断开")
@@ -224,12 +321,15 @@ class MainWindow(QMainWindow):
                 if success:
                     self.status_label.setText("已连接")
                     self.status_label.setStyleSheet("color: green;")
-                    self.connect_btn.setText("断开")
+                    self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
+                    # 不开始闪烁，等收到数据后再闪烁
                     self.pause_btn.setEnabled(True)
                     
                     # 清空旧通道
                     self.waveform_widget.clear_all()
                     self.channels_label.setText("自动检测通道...")
+                    self.data_status_label.setText("数据状态: 等待数据...")
+                    self.data_status_label.setStyleSheet("color: #666;")
                     
                     # 自动开始保存
                     save_path = self.save_path_edit.text()
@@ -327,6 +427,15 @@ class MainWindow(QMainWindow):
         if not self.data_source_manager.is_connected():
             return
         
+        # 检查校验头不匹配情况
+        header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
+        if header_mismatch_count > 0:
+            # 校验头不匹配，红色闪烁
+            self.connect_btn.set_color(QColor(220, 20, 60))  # 红色
+            self.connect_btn.start_flashing(500)  # 500ms闪烁间隔，更明显
+            self.data_status_label.setText(f"数据状态: 校验头不匹配 ({header_mismatch_count}次)")
+            self.data_status_label.setStyleSheet("color: red;")
+        
         # 循环读取所有积压的数据
         while True:
             # 读取数据（返回字典格式）
@@ -336,8 +445,26 @@ class MainWindow(QMainWindow):
                 # 没有更多数据，退出循环
                 break
             
+            # 如果之前有校验头不匹配，现在收到有效数据，恢复蓝色闪烁
+            if header_mismatch_count > 0:
+                self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
+                self.connect_btn.start_flashing(100)  # 蓝色快速闪烁
+                self.data_status_label.setText("数据状态: 正常接收")
+                self.data_status_label.setStyleSheet("color: green;")
+            
+            # 收到数据，开始蓝色快速闪烁
+            if self.data_count == 0:
+                # 第一次收到数据，开始闪烁
+                self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
+                self.connect_btn.start_flashing(100)  # 快速闪烁（200ms）
+                self.data_status_label.setText("数据状态: 正常接收")
+                self.data_status_label.setStyleSheet("color: green;")
+            
             self.data_count += 1
             self.data_count_label.setText(f"接收数据: {self.data_count}")
+            
+            # 更新最后接收数据的时间
+            self.last_data_time = QDateTime.currentMSecsSinceEpoch()
             
             # 获取当前所有通道
             channels = self.data_source_manager.get_channels()
@@ -401,6 +528,21 @@ class MainWindow(QMainWindow):
             waveform_data = {k: v for k, v in data_dict.items() if k != 'timestamp'}
             self.waveform_widget.update_channels(waveform_data, timestamp)
     
+    def check_data_timeout(self):
+        """检查数据是否超时"""
+        if not self.data_source_manager.is_connected():
+            return
+        
+        if self.last_data_time is not None:
+            current_time = QDateTime.currentMSecsSinceEpoch()
+            elapsed = current_time - self.last_data_time
+            if elapsed > self.data_timeout:
+                # 数据超时，停止闪烁，恢复蓝色但不闪烁
+                self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
+                self.connect_btn.stop_flashing()
+                self.data_status_label.setText("数据状态: 数据停止")
+                self.data_status_label.setStyleSheet("color: #666;")
+    
     def show_channel_context_menu(self, position):
         """显示通道右键菜单
         
@@ -462,6 +604,7 @@ class MainWindow(QMainWindow):
         else:
             print(f"通道 '{channel_name}' 颜色设置已取消")
     
+
     def closeEvent(self, event):
         """关闭事件"""
         self.data_source_manager.disconnect()

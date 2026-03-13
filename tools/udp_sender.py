@@ -109,7 +109,7 @@ class UDPSender:
             print("UDP发送器已关闭")
     
     def send_random_data(self, channels: int = 3, duration: float = 10.0, 
-                        channel_names: list = None, header: str = 'DATA'):
+                        channel_names: list = None, header: str = 'www'):
         """发送随机数据
         
         Args:
