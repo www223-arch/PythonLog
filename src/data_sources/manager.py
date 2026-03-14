@@ -139,8 +139,6 @@ class DataSourceManager:
                     if display_channel_name not in self.channels and original_channel_name not in self.channels:
                         self.channels.append(display_channel_name)
                         print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
-                    else:
-                        print(f"[read_data] 通道已存在，跳过: {display_channel_name} (原始名: {original_channel_name}), 当前channels: {self.channels}")
             else:
                 # 如果没有get_channel_names方法，使用默认通道名称（Justfloat模式）
                 for i, value in enumerate(data[2:], 1):
@@ -154,8 +152,6 @@ class DataSourceManager:
                     if display_channel_name not in self.channels and original_channel_name not in self.channels:
                         self.channels.append(display_channel_name)
                         print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
-                    else:
-                        print(f"[read_data] 通道已存在，跳过: {display_channel_name} (原始名: {original_channel_name}), 当前channels: {self.channels}")
             
             # 保存到缓冲区
             self.data_buffer.append(data_dict)
