@@ -9,17 +9,76 @@ Python上位机主程序
 
 import sys
 import os
+import queue
+import threading
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                              QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut, QComboBox, QTextEdit, QSplitter, QInputDialog)
-from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize
-from PyQt5.QtCore import Qt, QTimer, QDateTime
+from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient, QKeySequence
 
 from data_sources.manager import DataSourceManager, create_udp_source
 from visualization.waveform_widget import WaveformWidget
 from enum import Enum
 
+
+class DataReceiveThread(QThread):
+    """数据接收线程
+    
+    在后台接收和解析数据，将数据放入队列
+    """
+    
+    # 定义信号
+    disconnect_signal = pyqtSignal()  # 断开连接信号
+    
+    def __init__(self, data_source_manager, data_queue, stop_event, log_print, parent=None):
+        """初始化数据接收线程
+        
+        Args:
+            data_source_manager: 数据源管理器
+            data_queue: 数据队列
+            stop_event: 停止事件
+            log_print: 日志打印函数
+            parent: 父对象
+        """
+        super().__init__(parent)
+        self.data_source_manager = data_source_manager
+        self.data_queue = data_queue
+        self.stop_event = stop_event
+        self.log_print = log_print
+    
+    def run(self):
+        """运行线程"""
+        self.log_print("[DataReceiveThread] 启动数据接收线程")
+        
+        while not self.stop_event.is_set():
+            try:
+                # 检查数据源是否仍然连接
+                if not self.data_source_manager.current_source or not self.data_source_manager.current_source.is_connected:
+                    self.log_print("[DataReceiveThread] 数据源已断开，停止接收")
+                    # 发送断开信号到主线程
+                    self.disconnect_signal.emit()
+                    break
+                
+                # 读取数据（返回字典格式）
+                data_dict = self.data_source_manager.read_data()
+                
+                if data_dict is not None:
+                    # 将数据放入队列
+                    self.data_queue.put(data_dict, block=False)
+            except queue.Full:
+                # 队列已满，丢弃数据
+                self.log_print("[DataReceiveThread] 数据队列已满，丢弃数据")
+            except AttributeError as e:
+                # 数据源已断开
+                self.log_print(f"[DataReceiveThread] 数据源访问失败: {e}")
+                self.disconnect_signal.emit()
+                break
+            except Exception as e:
+                self.log_print(f"[DataReceiveThread] 接收数据失败: {e}")
+                # 继续运行，不退出
+        
+        self.log_print("[DataReceiveThread] 停止数据接收线程")
 
 class ConnectionState(Enum):
     """连接状态枚举"""
@@ -832,6 +891,11 @@ class MainWindow(QMainWindow):
         self.raw_data_update_timer.timeout.connect(self.flush_raw_data_buffer)
         self.raw_data_update_timer.start(self.raw_data_update_interval)
         
+        # 多线程架构
+        self.data_queue = queue.Queue(maxsize=1000)  # 数据队列，最大1000个数据点
+        self.stop_event = threading.Event()  # 停止事件
+        self.receive_thread = None  # 数据接收线程
+        
         # 日志开关已在__init__中初始化
         
         # 初始化状态机
@@ -839,25 +903,9 @@ class MainWindow(QMainWindow):
         
         # 定义断开回调函数
         def on_disconnect():
-            """数据源断开回调"""
-            self.log_print("[断开回调] 数据源已断开")
-            # 更新UI状态
-            self.status_label.setText("未连接")
-            self.status_label.setStyleSheet("color: red;")
-            self.pause_btn.setEnabled(False)
-            # 启用数据源类型选择
-            self.source_type_combo.setEnabled(True)
-            self.data_count = 0
-            self.data_count_label.setText("接收数据: 0")
-            self.save_file_label.setText("保存文件: 无")
-            self.channels_label.setText("自动检测通道...")
-            self.save_btn.setText("开始保存")
-            self.auto_save_enabled = False
-            self.clear_raw_data()  # 清空原始数据接收区
-            # 重置last_data_time
-            self.last_data_time = None
-            # 转换到未连接状态
-            self.state_machine.handle_event('disconnect')
+            """数据源断开回调（已废弃，使用信号机制）"""
+            self.log_print("[断开回调] 数据源已断开（此回调已废弃）")
+            # 不再在这里处理断开逻辑，因为现在使用信号机制
         
         # 保存断开回调函数
         self.disconnect_callback = on_disconnect
@@ -889,6 +937,9 @@ class MainWindow(QMainWindow):
         """切换连接/断开状态"""
         if self.data_source_manager.is_connected():
             # 断开连接
+            # 先停止数据接收线程，避免访问已断开的数据源
+            self.stop_receive_thread()
+            # 再断开数据源连接
             self.data_source_manager.disconnect()
             self.status_label.setText("未连接")
             self.status_label.setStyleSheet("color: red;")
@@ -977,29 +1028,31 @@ class MainWindow(QMainWindow):
                 if success:
                     self.status_label.setText("已连接")
                     self.status_label.setStyleSheet("color: green;")
-                    self.pause_btn.setEnabled(True)
-                    # 禁用数据源类型选择
-                    self.source_type_combo.setEnabled(False)
+                self.pause_btn.setEnabled(True)
+                # 禁用数据源类型选择
+                self.source_type_combo.setEnabled(False)
+                # 启动数据接收线程
+                self.start_receive_thread()
+                
+                # 清空旧通道
+                self.waveform_widget.clear_all()
+                self.channels_label.setText("自动检测通道...")
+                
+                # 重置校验头不匹配计数器
+                self.data_source_manager.reset_header_mismatch_count()
+                
+                # 转换到已连接-等待数据状态
+                self.state_machine.handle_event('connect')
                     
-                    # 清空旧通道
-                    self.waveform_widget.clear_all()
-                    self.channels_label.setText("自动检测通道...")
-                    
-                    # 重置校验头不匹配计数器
-                    self.data_source_manager.reset_header_mismatch_count()
-                    
-                    # 转换到已连接-等待数据状态
-                    self.state_machine.handle_event('connect')
-                    
-                    # 自动开始保存
-                    save_path = self.save_path_edit.text()
-                    if save_path:
-                        self.data_source_manager.set_save_path(save_path)
-                        if self.data_source_manager.start_saving():
-                            self.save_btn.setText("停止保存")
-                            save_file = self.data_source_manager.get_save_file()
-                            self.save_file_label.setText(f"保存文件: {save_file}")
-                            self.auto_save_enabled = True
+                # 自动开始保存
+                save_path = self.save_path_edit.text()
+                if save_path:
+                    self.data_source_manager.set_save_path(save_path)
+                    if self.data_source_manager.start_saving():
+                        self.save_btn.setText("停止保存")
+                        save_file = self.data_source_manager.get_save_file()
+                        self.save_file_label.setText(f"保存文件: {save_file}")
+                        self.auto_save_enabled = True
                 else:
                     QMessageBox.warning(self, "失败", "连接失败，请检查配置")
             except ValueError:
@@ -1249,6 +1302,51 @@ class MainWindow(QMainWindow):
         """清空原始数据"""
         self.raw_data_text.clear()
     
+    def start_receive_thread(self):
+        """启动数据接收线程"""
+        # 重置停止事件
+        self.stop_event.clear()
+        # 创建数据接收线程
+        self.receive_thread = DataReceiveThread(
+            self.data_source_manager,
+            self.data_queue,
+            self.stop_event,
+            self.log_print
+        )
+        # 连接断开信号
+        self.receive_thread.disconnect_signal.connect(self.on_disconnect_from_thread)
+        # 启动线程
+        self.receive_thread.start()
+        self.log_print("[MainWindow] 启动数据接收线程")
+    
+    def on_disconnect_from_thread(self):
+        """从接收线程中处理断开连接（在主线程中执行）"""
+        self.log_print("[MainWindow] 收到断开连接信号")
+        # 在主线程中执行断开逻辑
+        self.toggle_connection()
+    
+    def stop_receive_thread(self):
+        """停止数据接收线程"""
+        if self.receive_thread and self.receive_thread.isRunning():
+            # 设置停止事件
+            self.stop_event.set()
+            # 等待线程结束（最多等待1秒）
+            if self.receive_thread.wait(1000):
+                self.log_print("[MainWindow] 数据接收线程已停止")
+            else:
+                self.log_print("[MainWindow] 数据接收线程停止超时")
+            # 终止线程（强制停止）
+            if self.receive_thread.isRunning():
+                self.receive_thread.terminate()
+                self.receive_thread.wait(500)
+                self.log_print("[MainWindow] 数据接收线程已强制停止")
+        # 清空队列
+        while not self.data_queue.empty():
+            try:
+                self.data_queue.get_nowait()
+            except queue.Empty:
+                break
+    
     def apply_buffer_size(self):
         """应用缓存区大小设置"""
         try:
@@ -1299,100 +1397,108 @@ class MainWindow(QMainWindow):
         if not self.state_machine.is_connected():
             return
         
-        # 循环读取所有积压的数据
-        while True:
-            # 读取数据（返回字典格式）
-            data_dict = self.data_source_manager.read_data()
-            
-            if data_dict is None:
-                # 没有更多数据，退出循环
-                break
-            
-            # 检查是否是格式错误标识
-            if data_dict.get('format_error'):
-                # 格式错误，触发format_error事件
+        # 从队列中取出数据，最多处理10个数据点
+        processed_count = 0
+        max_process_per_update = 10  # 每次最多处理10个数据点
+        
+        while processed_count < max_process_per_update:
+            try:
+                # 从队列中取出数据
+                data_dict = self.data_queue.get(block=False)
+                
+                # 检查是否是格式错误标识
+                if data_dict.get('format_error'):
+                    # 格式错误，触发format_error事件
+                    header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
+                    self.state_machine.handle_event('format_error', mismatch_count=header_mismatch_count)
+                    continue
+                
+                # 检查数据格式不匹配情况（在读取数据后检查）
                 header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
-                self.state_machine.handle_event('format_error', mismatch_count=header_mismatch_count)
-                continue
-            
-            # 检查数据格式不匹配情况（在读取数据后检查）
-            header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
-            
-            if header_mismatch_count > 0:
-                # 数据格式不匹配，触发format_error事件
-                self.state_machine.handle_event('format_error', mismatch_count=header_mismatch_count)
-                continue
-            
-            # 数据格式正确，触发data_received事件
-            self.state_machine.handle_event('data_received')
-            
-            self.data_count += 1
-            self.data_count_label.setText(f"接收数据: {self.data_count}")
-            
-            # 更新最后接收数据的时间
-            self.last_data_time = QDateTime.currentMSecsSinceEpoch()
-            
-            # 获取当前所有通道
-            channels = self.data_source_manager.get_channels()
-            
-            # 更新通道显示
-            if channels:
-                channels_text = ", ".join(channels)
-                self.channels_label.setText(f"检测到通道: {channels_text}")
-            
-            # 自动创建通道
-            # 使用PyQtGraph支持的颜色格式（RGB值或完整颜色名）
-            colors = [
-                (255, 0, 0),      # 红色
-                (0, 255, 0),      # 绿色
-                (0, 0, 255),      # 蓝色
-                (0, 255, 255),    # 青色
-                (255, 0, 255),    # 品红色
-                (255, 255, 0),    # 黄色
-                (0, 0, 0),        # 黑色
-                (255, 165, 0),    # 橙色
-                (128, 0, 128),    # 紫色
-                (165, 42, 42),    # 棕色
-                (255, 192, 203),  # 粉色
-                (128, 128, 128),  # 灰色
-                (85, 107, 47),    # 橄榄色
-                (128, 0, 128),    # 紫色
-                (0, 128, 128),    # 蓝绿色
-                (0, 128, 128),    # 海军蓝
-                (128, 0, 0),      # 栗色
-                (0, 255, 255),    # 浅蓝色
-                (0, 255, 0),      # 莱檬绿
-                (255, 0, 255),    # 紫红色
-                (192, 192, 192),  # 银色
-                (255, 215, 0),    # 金色
-                (75, 0, 130),     # 靛蓝色
-                (238, 130, 238),  # 紫罗兰色
-                (255, 105, 180),  # 珊瑚色
-                (255, 99, 71),    # 焦糖色
-                (147, 112, 219),  # 淡紫色
-                (64, 224, 208),   # 绿松石色
-                (0, 206, 209),    # 深天蓝色
-                (255, 228, 225),  # 旧蕾丝色
-                (255, 160, 122),  # 浅鲑鱼肉色
-                (255, 127, 80),   # 珊瑚色
-                (46, 139, 87),    # 海洋绿
-                (255, 239, 213),  # 薰荷色
-                (255, 182, 193),  # 浅粉色
-                (255, 188, 217),  # 淡紫色
-                (255, 255, 240),  # 象牙色
-                (240, 248, 255),  # 爱丽丝蓝
-                (245, 245, 220),  # 米色
-                (255, 250, 205),  # 拉斯金
-            ]
-            for i, channel_name in enumerate(channels):
-                if channel_name not in self.waveform_widget.channels:
-                    color = colors[i % len(colors)]
-                    self.waveform_widget.add_channel(channel_name, color, 2)
-            
-            # 更新波形显示（使用发送方的时间戳）
-            timestamp = data_dict.get('timestamp', 0.0)
-            waveform_data = {k: v for k, v in data_dict.items() if k != 'timestamp'}
-            self.waveform_widget.update_channels(waveform_data, timestamp)
+                
+                if header_mismatch_count > 0:
+                    # 数据格式不匹配，触发format_error事件
+                    self.state_machine.handle_event('format_error', mismatch_count=header_mismatch_count)
+                    continue
+                
+                # 数据格式正确，触发data_received事件
+                self.state_machine.handle_event('data_received')
+                
+                self.data_count += 1
+                self.data_count_label.setText(f"接收数据: {self.data_count}")
+                
+                # 更新最后接收数据的时间
+                self.last_data_time = QDateTime.currentMSecsSinceEpoch()
+                
+                # 获取当前所有通道
+                channels = self.data_source_manager.get_channels()
+                
+                # 更新通道显示
+                if channels:
+                    channels_text = ", ".join(channels)
+                    self.channels_label.setText(f"检测到通道: {channels_text}")
+                
+                # 自动创建通道
+                # 使用PyQtGraph支持的颜色格式（RGB值或完整颜色名）
+                colors = [
+                    (255, 0, 0),      # 红色
+                    (0, 255, 0),      # 绿色
+                    (0, 0, 255),      # 蓝色
+                    (0, 255, 255),    # 青色
+                    (255, 0, 255),    # 品红色
+                    (255, 255, 0),    # 黄色
+                    (0, 0, 0),        # 黑色
+                    (255, 165, 0),    # 橙色
+                    (128, 0, 128),    # 紫色
+                    (165, 42, 42),    # 棕色
+                    (255, 192, 203),  # 粉色
+                    (128, 128, 128),  # 灰色
+                    (85, 107, 47),    # 橄榄色
+                    (128, 0, 128),    # 紫色
+                    (0, 128, 128),    # 蓝绿色
+                    (0, 128, 128),    # 海军蓝
+                    (128, 0, 0),      # 栗色
+                    (0, 255, 255),    # 浅蓝色
+                    (0, 255, 0),      # 莱檬绿
+                    (255, 0, 255),    # 紫红色
+                    (192, 192, 192),  # 银色
+                    (255, 215, 0),    # 金色
+                    (75, 0, 130),     # 靛蓝色
+                    (238, 130, 238),  # 紫罗兰色
+                    (255, 105, 180),  # 珊瑚色
+                    (255, 99, 71),    # 焦糖色
+                    (147, 112, 219),  # 淡紫色
+                    (64, 224, 208),   # 绿松石色
+                    (0, 206, 209),    # 深天蓝色
+                    (255, 228, 225),  # 旧蕾丝色
+                    (255, 160, 122),  # 浅鲑鱼肉色
+                    (255, 127, 80),   # 珊瑚色
+                    (46, 139, 87),    # 海洋绿
+                    (255, 239, 213),  # 薰荷色
+                    (255, 182, 193),  # 浅粉色
+                    (255, 188, 217),  # 淡紫色
+                    (255, 255, 240),  # 象牙色
+                    (240, 248, 255),  # 爱丽丝蓝
+                    (245, 245, 220),  # 米色
+                    (255, 250, 205),  # 拉斯金
+                ]
+                for i, channel_name in enumerate(channels):
+                    if channel_name not in self.waveform_widget.channels:
+                        color = colors[i % len(colors)]
+                        self.waveform_widget.add_channel(channel_name, color, 2)
+                
+                # 更新波形显示（使用发送方的时间戳）
+                timestamp = data_dict.get('timestamp', 0.0)
+                waveform_data = {k: v for k, v in data_dict.items() if k != 'timestamp'}
+                self.waveform_widget.update_channels(waveform_data, timestamp)
+                
+                processed_count += 1
+            except queue.Empty:
+                # 队列为空，退出循环
+                break
+            except Exception as e:
+                self.log_print(f"[MainWindow] 处理数据失败: {e}")
+                break
     
     def check_data_timeout(self):
         """检查数据是否超时"""
