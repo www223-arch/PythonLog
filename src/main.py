@@ -929,28 +929,6 @@ class MainWindow(QMainWindow):
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
 
-        # 数据发送控制
-        send_group = QGroupBox("数据发送")
-        send_layout = QVBoxLayout()
-
-        self.send_edit = QLineEdit()
-        self.send_edit.setPlaceholderText("输入发送内容（文本模式会自动补换行）")
-        self.send_edit.returnPressed.connect(self.send_current_data)
-
-        self.send_btn = QPushButton("发送")
-        self.send_btn.clicked.connect(self.send_current_data)
-        self.send_btn.setEnabled(False)
-
-        self.send_result_label = QLabel("发送状态: 未发送")
-        self.send_result_label.setStyleSheet("color: #666;")
-
-        send_layout.addWidget(self.send_edit)
-        send_layout.addWidget(self.send_btn)
-        send_layout.addWidget(self.send_result_label)
-
-        send_group.setLayout(send_layout)
-        layout.addWidget(send_group)
-        
         # 通道配置组
         channel_group = QGroupBox("通道配置")
         channel_layout = QVBoxLayout()
@@ -1079,7 +1057,40 @@ class MainWindow(QMainWindow):
         self.raw_data_text = QTextEdit()
         self.raw_data_text.setReadOnly(True)
         self.raw_data_text.setStyleSheet("font-family: Consolas, monospace; font-size: 10pt;")
-        raw_data_layout.addWidget(self.raw_data_text)
+        
+        # 发送区域（与原始数据区放在一起，风格参考串口助手）
+        send_group = QGroupBox("发送区")
+        send_layout = QVBoxLayout()
+
+        self.send_edit = QTextEdit()
+        self.send_edit.setPlaceholderText("输入发送内容（Enter换行，Ctrl+Enter发送）")
+        self.send_edit.setMinimumHeight(90)
+
+        send_button_row = QHBoxLayout()
+        self.send_btn = QPushButton("发送")
+        self.send_btn.clicked.connect(self.send_current_data)
+        self.send_btn.setEnabled(False)
+        send_button_row.addWidget(self.send_btn)
+        send_button_row.addStretch()
+
+        self.send_result_label = QLabel("发送状态: 未发送")
+        self.send_result_label.setStyleSheet("color: #666;")
+
+        send_layout.addWidget(self.send_edit)
+        send_layout.addLayout(send_button_row)
+        send_layout.addWidget(self.send_result_label)
+        send_group.setLayout(send_layout)
+
+        # 使用分割器让“接收区/发送区”都可拖拽调节高度
+        io_splitter = QSplitter(Qt.Vertical)
+        io_splitter.addWidget(self.raw_data_text)
+        io_splitter.addWidget(send_group)
+        io_splitter.setStretchFactor(0, 7)
+        io_splitter.setStretchFactor(1, 3)
+        io_splitter.setChildrenCollapsible(False)
+        io_splitter.setHandleWidth(5)
+
+        raw_data_layout.addWidget(io_splitter)
         
         # 清空按钮
         clear_raw_data_btn = QPushButton("清空原始数据")
@@ -1252,6 +1263,10 @@ class MainWindow(QMainWindow):
         # 设置空格键快捷键为暂停/继续
         self.space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
         self.space_shortcut.activated.connect(self.toggle_pause)
+
+        # 发送快捷键：Ctrl+Enter发送，Enter保留换行
+        self.send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self.send_edit)
+        self.send_shortcut.activated.connect(self.send_current_data)
         
         # 设置初始UI状态
         self.on_source_type_changed(self.source_type_combo.currentText())
@@ -1706,7 +1721,7 @@ class MainWindow(QMainWindow):
             self.send_result_label.setStyleSheet("color: red;")
             return
 
-        text = self.send_edit.text()
+        text = self.send_edit.toPlainText()
         if not text:
             return
 
@@ -1728,10 +1743,34 @@ class MainWindow(QMainWindow):
             self.send_result_label.setText("发送状态: 成功")
             self.send_result_label.setStyleSheet("color: green;")
             self.log_print(f"[发送] {source_type} 发送成功: {text}")
+            self._append_tx_to_raw_data_view(text)
         else:
             self.send_result_label.setText("发送状态: 失败（当前源不支持或目标不可达）")
             self.send_result_label.setStyleSheet("color: red;")
             self.log_print(f"[发送] {source_type} 发送失败: {text}")
+
+    def _append_tx_to_raw_data_view(self, text: str):
+        """在原始数据区追加发送内容，带TX标识。"""
+        timestamp = QDateTime.currentDateTime().toString("HH:mm:ss.zzz")
+        lines = text.splitlines() or [""]
+        tx_text = "\n".join([f"[TX][{timestamp}] {line}" for line in lines])
+        self.raw_data_text.append(tx_text)
+        self._trim_raw_data_text_lines()
+
+    def _trim_raw_data_text_lines(self):
+        """限制原始数据区最大行数，避免内存占用持续增长。"""
+        max_lines = 1000
+        document = self.raw_data_text.document()
+        if document.blockCount() <= max_lines:
+            return
+
+        cursor = self.raw_data_text.textCursor()
+        cursor.movePosition(cursor.Start)
+        cursor.movePosition(cursor.Down, cursor.KeepAnchor, document.blockCount() - max_lines)
+        cursor.removeSelectedText()
+
+        scrollbar = self.raw_data_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
     
     def on_justfloat_mode_changed(self, mode_text: str):
         """Justfloat模式改变事件处理
@@ -1858,18 +1897,8 @@ class MainWindow(QMainWindow):
             self.raw_data_buffer.clear()
             self.raw_data_text.append(all_text)
             
-            # 限制显示行数，避免内存占用过大
-            max_lines = 1000
-            document = self.raw_data_text.document()
-            if document.blockCount() > max_lines:
-                cursor = self.raw_data_text.textCursor()
-                cursor.movePosition(cursor.Start)
-                cursor.movePosition(cursor.Down, cursor.KeepAnchor, document.blockCount() - max_lines)
-                cursor.removeSelectedText()
-            
-            # 自动滚动到底部
-            scrollbar = self.raw_data_text.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
+            # 限制行数并滚动到底部
+            self._trim_raw_data_text_lines()
         except Exception as e:
             self.log_print(f"刷新原始数据缓冲区失败: {e}")
     

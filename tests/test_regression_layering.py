@@ -236,6 +236,7 @@ class ManagerLayeringRegressionTests(unittest.TestCase):
             while manager.read_frame() is not None:
                 pass
             self.assertTrue(src.is_connected)
+            manager.disconnect()
 
     def test_file_justfloat_without_timestamp_replay(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -266,6 +267,7 @@ class ManagerLayeringRegressionTests(unittest.TestCase):
             while manager.read_frame() is not None:
                 pass
             self.assertTrue(src.is_connected)
+            manager.disconnect()
 
     def test_file_text_source_can_tail_new_appended_lines(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -298,6 +300,7 @@ class ManagerLayeringRegressionTests(unittest.TestCase):
 
             self.assertIsNotNone(frame2)
             self.assertEqual(frame2['channels']['a'], 2.5)
+            manager.disconnect()
 
 
 if __name__ == '__main__':

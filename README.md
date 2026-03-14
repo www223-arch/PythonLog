@@ -70,6 +70,12 @@ python tools/udp_sender.py --type sine --channels 3 --frequency 1.0 --duration 1
 
 # 边发UDP边实时追加到文件（用于“文件源”实时读取联调）
 python tools/udp_sender.py --type sine --duration 30 --dump-log data/live_udp.log
+
+# 启用UDP接收调试（文本显示）
+python tools/udp_sender.py --type sine --duration 10 --recv --recv-port 8889 --recv-format text
+
+# 启用UDP接收调试（十六进制显示）
+python tools/udp_sender.py --type sine --duration 10 --recv --recv-port 8889 --recv-format hex
 ```
 
 ### 3. TCP 测试发送（与 UDP 发送器风格一致）
@@ -91,6 +97,12 @@ python tools/tcp_sender.py --type sine --channels 3 --duration 10 --names 电压
 
 # 边发TCP边实时追加到文件（用于“文件源”实时读取联调）
 python tools/tcp_sender.py --host 127.0.0.1 --port 9999 --type sine --duration 30 --dump-log data/live_tcp.log
+
+# 启用TCP接收调试（文本显示）
+python tools/tcp_sender.py --host 127.0.0.1 --port 9999 --type sine --duration 10 --recv --recv-format text
+
+# 启用TCP接收调试（十六进制显示）
+python tools/tcp_sender.py --host 127.0.0.1 --port 9999 --type sine --duration 10 --recv --recv-format hex
 ```
 
 ### 4. 生成文件测试流程（.log / .bin）

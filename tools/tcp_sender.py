@@ -10,18 +10,29 @@ import argparse
 import math
 import socket
 import time
+import threading
 
 
 class TCPSender:
     """TCP数据发送器（客户端模式）"""
 
-    def __init__(self, host: str = '127.0.0.1', port: int = 9999, dump_log_path: str = ''):
+    def __init__(
+        self,
+        host: str = '127.0.0.1',
+        port: int = 9999,
+        dump_log_path: str = '',
+        enable_recv: bool = False,
+        recv_format: str = 'text',
+    ):
         self.host = host
         self.port = port
         self.socket = None
         self.is_running = False
         self.dump_log_path = dump_log_path
         self._dump_fp = None
+        self.enable_recv = enable_recv
+        self.recv_format = recv_format
+        self.recv_thread = None
 
         if self.dump_log_path:
             self._dump_fp = open(self.dump_log_path, 'a', encoding='utf-8')
@@ -29,6 +40,40 @@ class TCPSender:
     def connect(self) -> None:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.connect((self.host, self.port))
+        self.socket.settimeout(0.2)
+
+    def start_receiver(self) -> None:
+        """启动TCP接收线程（用于显示回包/下行数据）。"""
+        if not self.enable_recv:
+            return
+        if self.socket is None:
+            return
+        if self.recv_thread and self.recv_thread.is_alive():
+            return
+
+        self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
+        self.recv_thread.start()
+        print(f"TCP接收显示已启用 ({self.recv_format})")
+
+    def _recv_loop(self) -> None:
+        while self.is_running and self.socket:
+            try:
+                data = self.socket.recv(4096)
+                if not data:
+                    print("[RX] 对端已关闭连接")
+                    break
+                self._print_rx_data(data)
+            except socket.timeout:
+                continue
+            except Exception:
+                break
+
+    def _print_rx_data(self, data: bytes) -> None:
+        if self.recv_format == 'hex':
+            content = data.hex(' ').upper()
+        else:
+            content = data.decode('utf-8', errors='replace').rstrip('\r\n')
+        print(f"[RX][TCP] {content}")
 
     def close(self) -> None:
         if self.socket:
@@ -161,13 +206,17 @@ def main() -> None:
     parser.add_argument('--names', type=str, nargs='+', default=None, help='自定义通道名称')
     parser.add_argument('--header', type=str, default='DATA', help='数据校验头 (默认: DATA)')
     parser.add_argument('--dump-log', type=str, default='', help='可选：同步追加写入日志文件（用于文件源实时联调）')
+    parser.add_argument('--recv', action='store_true', help='启用接收调试：在终端显示收到的数据')
+    parser.add_argument('--recv-format', choices=['text', 'hex'], default='text', help='接收显示格式: text 或 hex')
 
     args = parser.parse_args()
-    sender = TCPSender(args.host, args.port, args.dump_log)
+    sender = TCPSender(args.host, args.port, args.dump_log, args.recv, args.recv_format)
 
     try:
         sender.connect()
         print('TCP连接成功')
+        sender.is_running = True
+        sender.start_receiver()
         if args.type == 'sine':
             sender.send_sine_wave(
                 channels=args.channels,
@@ -189,6 +238,7 @@ def main() -> None:
     except Exception as e:
         print(f'发送失败: {e}')
     finally:
+        sender.is_running = False
         sender.close()
         print('TCP发送器已关闭')
 
