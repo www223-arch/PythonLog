@@ -18,7 +18,7 @@ class SerialDataSource(DataSource):
     支持文本协议和二进制协议。
     """
     
-    def __init__(self, port: str = 'COM1', baudrate: int = 115200, protocol: str = 'text', data_header: str = 'DATA'):
+    def __init__(self, port: str = 'COM1', baudrate: int = 115200, protocol: str = 'text', data_header: str = 'DATA', justfloat_mode: str = 'without_timestamp', delta_t: float = 1.0):
         """初始化串口数据源
         
         Args:
@@ -26,17 +26,30 @@ class SerialDataSource(DataSource):
             baudrate: 波特率，默认为115200
             protocol: 协议类型，'text'为文本协议，'binary'为二进制协议
             data_header: 数据校验头，用于文本协议
+            justfloat_mode: Justfloat模式，'without_timestamp'为无时间戳，'with_timestamp'为带时间戳
+            delta_t: 数据点间隔（毫秒），仅用于无时间戳模式
         """
         super().__init__()
         self.port = port
         self.baudrate = baudrate
         self.protocol = protocol  # 'text' 或 'binary'
         self.data_header = data_header  # 数据校验头
+        self.justfloat_mode = justfloat_mode  # Justfloat模式
+        self.delta_t = delta_t  # 数据点间隔（毫秒）
         self.serial = None
         self.last_raw_text = None  # 存储原始文本，用于提取通道名称
         self.buffer = bytearray()  # 二进制数据缓冲区
         self.frame_tail = bytes([0x00, 0x00, 0x80, 0x7f])  # 二进制帧尾标识
         self.raw_data_callback = None  # 原始数据回调函数
+        self.data_point_counter = 0  # 数据点计数器（用于无时间戳模式）
+        self.start_time = None  # 起始时间（用于无时间戳模式）
+    
+    def reset_data_point_counter(self) -> None:
+        """重置数据点计数器（用于改变Δt后）
+        """
+        self.data_point_counter = 0
+        self.start_time = None
+        print(f"[reset_data_point_counter] 数据点计数器已重置")
     
     def connect(self) -> bool:
         """连接串口数据源
@@ -184,9 +197,16 @@ class SerialDataSource(DataSource):
     def _parse_justfloat_data(self, data: bytes) -> Optional[Tuple[float, ...]]:
         """解析Justfloat数据（纯浮点数，无数据校验头和时间戳）
         
-        Justfloat协议格式：
+        Justfloat协议格式（无时间戳）：
         struct Frame {
             float fdata[CH_COUNT];
+            unsigned char tail[4]{0x00, 0x00, 0x80, 0x7f};
+        };
+        
+        Justfloat协议格式（带时间戳）：
+        struct Frame {
+            float fdata[CH_COUNT];
+            float time;
             unsigned char tail[4]{0x00, 0x00, 0x80, 0x7f};
         };
         
@@ -232,12 +252,25 @@ class SerialDataSource(DataSource):
             # 解析浮点数
             values = struct.unpack(f'{num_floats}f', frame_data)
             
-            # 返回数据元组（添加数据校验头和时间戳）
-            # 数据校验头：使用空字符串
-            # 时间戳：使用当前时间
+            # 根据Justfloat模式处理时间戳
             import time
             header = ''
-            timestamp = time.time()
+            
+            if self.justfloat_mode == 'with_timestamp':
+                # 带时间戳模式：最后一个浮点数是时间戳（单位：ms）
+                if num_floats < 2:
+                    # 至少需要1个数据点 + 1个时间戳
+                    return None
+                timestamp_ms = values[-1]  # 最后一个浮点数是时间戳（ms）
+                timestamp = timestamp_ms / 1000.0  # 转换为秒
+                values = values[:-1]  # 去掉时间戳
+            else:
+                # 无时间戳模式：使用Δt计算时间戳（单位：ms）
+                # 第一个点从0ms开始，第二个点Δt ms，第三个点2*Δt ms，...
+                timestamp_ms = self.data_point_counter * self.delta_t
+                timestamp = timestamp_ms / 1000.0  # 转换为秒
+                self.data_point_counter += 1
+            
             result = (header, timestamp) + values
             
             return result
