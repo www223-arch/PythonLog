@@ -23,6 +23,7 @@ class DataSourceManager:
         self.max_buffer_size = 1000
         self.data_saver = DataSaver()
         self.channels = []
+        self.channel_set = set()
         self.channel_data = {}  # 存储各通道的数据
         self.timestamps = []  # 存储时间戳
         self.data_header = 'DATA'  # 数据校验头，默认'DATA'
@@ -30,6 +31,7 @@ class DataSourceManager:
         self.header_mismatch_count = 0  # 校验头不匹配计数器
         self.last_valid_data_time = None  # 最后一次有效数据的时间
         self.channel_name_mapping = {}  # 通道名映射字典 {原始名: 新名}
+        self.log_enabled = False  # 日志开关，默认关闭以提高性能
 
  
     
@@ -52,6 +54,7 @@ class DataSourceManager:
             if success:
                 self.data_buffer.clear()
                 self.channels.clear()
+                self.channel_set.clear()
                 self.channel_data.clear()
                 self.timestamps.clear()
                 self.channel_name_mapping.clear()  # 清空通道名映射
@@ -97,7 +100,8 @@ class DataSourceManager:
             # 检查是否是数据格式错误标识（先检查这个）
             if header == 'FORMAT_ERROR':
                 self.header_mismatch_count += 1
-                print(f"[警告] 数据格式不匹配 - 丢弃数据")
+                if self.log_enabled:
+                    print(f"[警告] 数据格式不匹配 - 丢弃数据")
                 # 返回特殊标识，表示有格式错误
                 return {'format_error': True, 'header': header, 'timestamp': timestamp_ms}
             
@@ -110,7 +114,8 @@ class DataSourceManager:
             # 验证数据校验头（只在数据校验头不为空时才验证）
             if self.header_enabled and header != '' and header != self.data_header:
                 self.header_mismatch_count += 1
-                print(f"[警告] 数据校验头不匹配: 期望'{self.data_header}', 收到'{header}' - 丢弃数据")
+                if self.log_enabled:
+                    print(f"[警告] 数据校验头不匹配: 期望'{self.data_header}', 收到'{header}' - 丢弃数据")
                 return None
             
             # 重置校验头不匹配计数器
@@ -136,9 +141,11 @@ class DataSourceManager:
                     
                     # 自动添加新通道（使用映射后的名称）
                     # 检查：映射后的通道名是否已存在，或者原始通道名是否已存在
-                    if display_channel_name not in self.channels and original_channel_name not in self.channels:
+                    if display_channel_name not in self.channel_set and original_channel_name not in self.channel_set:
                         self.channels.append(display_channel_name)
-                        print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
+                        self.channel_set.add(display_channel_name)
+                        if self.log_enabled:
+                            print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
             else:
                 # 如果没有get_channel_names方法，使用默认通道名称（Justfloat模式）
                 for i, value in enumerate(data[2:], 1):
@@ -149,9 +156,11 @@ class DataSourceManager:
                     
                     # 自动添加新通道（使用映射后的名称）
                     # 检查：映射后的通道名是否已存在，或者原始通道名是否已存在
-                    if display_channel_name not in self.channels and original_channel_name not in self.channels:
+                    if display_channel_name not in self.channel_set and original_channel_name not in self.channel_set:
                         self.channels.append(display_channel_name)
-                        print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
+                        self.channel_set.add(display_channel_name)
+                        if self.log_enabled:
+                            print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
             
             # 保存到缓冲区
             self.data_buffer.append(data_dict)
@@ -192,6 +201,7 @@ class DataSourceManager:
         
         # 清空通道
         self.channels.clear()
+        self.channel_set.clear()
         self.channel_data.clear()
         self.timestamps.clear()
         # 清空通道名映射

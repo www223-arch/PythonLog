@@ -7,6 +7,7 @@
 
 import time
 import struct
+from collections import deque
 from typing import Optional, Tuple
 from .base import DataSource
 
@@ -39,10 +40,15 @@ class SerialDataSource(DataSource):
         self.serial = None
         self.last_raw_text = None  # 存储原始文本，用于提取通道名称
         self.buffer = bytearray()  # 二进制数据缓冲区
+        self.text_buffer = bytearray()  # 文本协议缓冲区
+        self.parsed_frames = deque()  # 已解析待消费的帧队列
         self.frame_tail = bytes([0x00, 0x00, 0x80, 0x7f])  # 二进制帧尾标识
         self.raw_data_callback = None  # 原始数据回调函数
         self.data_point_counter = 0  # 数据点计数器（用于无时间戳模式）
         self.start_time = None  # 起始时间（用于无时间戳模式）
+        self.bytes_read_count = 0  # 累计读取字节数
+        self.parsed_frame_count = 0  # 累计解析帧数
+        self.parse_time_ns_total = 0  # 累计解析耗时（ns）
     
     def reset_data_point_counter(self) -> None:
         """重置数据点计数器（用于改变Δt后）
@@ -62,7 +68,7 @@ class SerialDataSource(DataSource):
             self.serial = serial.Serial(
                 port=self.port,
                 baudrate=self.baudrate,
-                timeout=0.001  # 1ms超时
+                timeout=0  # 非阻塞，降低高频数据接收等待
             )
             self.is_connected = True
             print(f"串口数据源已连接: {self.port} @ {self.baudrate}bps")
@@ -80,26 +86,39 @@ class SerialDataSource(DataSource):
         """
         if not self.is_connected or not self.serial:
             return None
+
+        # 优先返回已经解析好的帧，避免读取频率限制吞吐
+        if self.parsed_frames:
+            return self.parsed_frames.popleft()
         
         try:
             if self.serial.in_waiting > 0:
                 if self.protocol == 'text':
-                    # 文本协议：按行读取
-                    data = self.serial.readline()
+                    # 文本协议：批量读取并解析完整行
+                    data = self.serial.read(self.serial.in_waiting)
+                    self.bytes_read_count += len(data)
                     # 调用原始数据回调
                     if self.raw_data_callback:
                         self.raw_data_callback(data)
-                    return self._parse_data(data)
+                    self._parse_text_buffer_data(data)
+                    if self.parsed_frames:
+                        return self.parsed_frames.popleft()
+                    return None
                 elif self.protocol == 'justfloat':
                     # Justfloat协议：纯浮点数，无数据校验头和时间戳
                     data = self.serial.read(self.serial.in_waiting)
+                    self.bytes_read_count += len(data)
                     # 调用原始数据回调
                     if self.raw_data_callback:
                         self.raw_data_callback(data)
-                    return self._parse_justfloat_data(data)
+                    self._parse_justfloat_data(data)
+                    if self.parsed_frames:
+                        return self.parsed_frames.popleft()
+                    return None
                 else:  # rawdata
                     # Rawdata协议：原始数据，直接显示
                     data = self.serial.read(self.serial.in_waiting)
+                    self.bytes_read_count += len(data)
                     # 调用原始数据回调
                     if self.raw_data_callback:
                         self.raw_data_callback(data)
@@ -136,6 +155,43 @@ class SerialDataSource(DataSource):
             # 返回错误标识，用于触发数据格式不匹配状态
             import time
             return ('FORMAT_ERROR', time.time())
+
+    def _parse_text_buffer_data(self, data: bytes) -> None:
+        """批量解析文本协议缓冲区，提取完整行并入队"""
+        if not data:
+            return
+
+        start_ns = time.perf_counter_ns()
+        self.text_buffer.extend(data)
+
+        while True:
+            newline_pos = self.text_buffer.find(b'\n')
+            if newline_pos == -1:
+                break
+
+            line_bytes = self.text_buffer[:newline_pos]
+            # 丢弃当前行（包含换行符）
+            self.text_buffer = self.text_buffer[newline_pos + 1:]
+
+            if not line_bytes:
+                continue
+
+            # 去掉可能存在的回车符
+            if line_bytes.endswith(b'\r'):
+                line_bytes = line_bytes[:-1]
+
+            try:
+                text_data = line_bytes.decode('utf-8', errors='ignore').strip()
+                if not text_data:
+                    continue
+                parsed = self._parse_text_data(text_data)
+                if parsed and len(parsed) > 0:
+                    self.parsed_frames.append(parsed)
+                    self.parsed_frame_count += 1
+            except Exception:
+                continue
+
+        self.parse_time_ns_total += time.perf_counter_ns() - start_ns
     
     def _parse_binary_data(self, data: bytes) -> Optional[Tuple[float, ...]]:
         """解析二进制数据
@@ -219,61 +275,52 @@ class SerialDataSource(DataSource):
         try:
             # 将新数据添加到缓冲区
             self.buffer.extend(data)
-            
-            # 查找帧尾标识
-            tail_pos = self.buffer.find(self.frame_tail)
-            
-            if tail_pos == -1:
-                # 没有找到帧尾，继续等待
-                return None
-            
-            # 检查帧长度是否合理
-            # 帧尾位置 + 4字节帧尾 = 总长度
-            frame_length = tail_pos + 4
-            
-            if frame_length < 4:
-                # 帧太短，丢弃
+
+            while True:
+                # 查找帧尾标识
+                tail_pos = self.buffer.find(self.frame_tail)
+                if tail_pos == -1:
+                    break
+
+                # 帧尾位置 + 4字节帧尾 = 总长度
+                frame_length = tail_pos + 4
+                if frame_length < 4:
+                    self.buffer = self.buffer[frame_length:]
+                    continue
+
+                # 提取帧数据（不包括帧尾）
+                frame_data = self.buffer[:tail_pos]
+                # 移除已消费帧
                 self.buffer = self.buffer[frame_length:]
-                return None
-            
-            # 提取帧数据（不包括帧尾）
-            frame_data = self.buffer[:tail_pos]
-            
-            # 清空缓冲区
-            self.buffer = self.buffer[frame_length:]
-            
-            # 解析浮点数数据
-            # 每个浮点数4字节
-            num_floats = len(frame_data) // 4
-            
-            if num_floats == 0:
-                return None
-            
-            # 解析浮点数
-            values = struct.unpack(f'{num_floats}f', frame_data)
-            
-            # 根据Justfloat模式处理时间戳
-            import time
-            header = ''
-            
-            if self.justfloat_mode == 'with_timestamp':
-                # 带时间戳模式：最后一个浮点数是时间戳（单位：ms）
-                if num_floats < 2:
-                    # 至少需要1个数据点 + 1个时间戳
-                    return None
-                timestamp_ms = values[-1]  # 最后一个浮点数是时间戳（ms）
-                timestamp = timestamp_ms / 1000.0  # 转换为秒
-                values = values[:-1]  # 去掉时间戳
-            else:
-                # 无时间戳模式：使用Δt计算时间戳（单位：ms）
-                # 第一个点从0ms开始，第二个点Δt ms，第三个点2*Δt ms，...
-                timestamp_ms = self.data_point_counter * self.delta_t
-                timestamp = timestamp_ms / 1000.0  # 转换为秒
-                self.data_point_counter += 1
-            
-            result = (header, timestamp) + values
-            
-            return result
+
+                # 每个浮点数4字节
+                num_floats = len(frame_data) // 4
+                if num_floats == 0:
+                    continue
+
+                values = struct.unpack(f'{num_floats}f', frame_data)
+                header = ''
+
+                if self.justfloat_mode == 'with_timestamp':
+                    # 带时间戳模式：最后一个浮点数是时间戳（单位：ms）
+                    if num_floats < 2:
+                        continue
+                    timestamp_ms = values[-1]
+                    timestamp = timestamp_ms / 1000.0
+                    values = values[:-1]
+                else:
+                    # 无时间戳模式：使用Δt计算时间戳
+                    timestamp_ms = self.data_point_counter * self.delta_t
+                    timestamp = timestamp_ms / 1000.0
+                    self.data_point_counter += 1
+
+                result = (header, timestamp) + values
+                self.parsed_frames.append(result)
+                self.parsed_frame_count += 1
+
+            if self.parsed_frames:
+                return self.parsed_frames[0]
+            return None
         except Exception as e:
             print(f"Justfloat数据解析失败: {e}, 原始数据: {data}")
             # 返回错误标识，用于触发数据格式不匹配状态
@@ -346,6 +393,9 @@ class SerialDataSource(DataSource):
             self.serial.close()
             self.serial = None
         self.is_connected = False
+        self.buffer.clear()
+        self.text_buffer.clear()
+        self.parsed_frames.clear()
         print("串口数据源已断开")
     
     def set_baudrate(self, baudrate: int) -> None:
