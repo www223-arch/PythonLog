@@ -66,7 +66,64 @@ python tools/udp_sender.py --type random --channels 3 --duration 10
 
 # 自定义通道名
 python tools/udp_sender.py --type sine --channels 3 --frequency 1.0 --duration 10 --names 电压 电流 温度
+
+# 边发UDP边实时追加到文件（用于“文件源”实时读取联调）
+python tools/udp_sender.py --type sine --duration 30 --dump-log data/live_udp.log
 ```
+
+### 3. TCP 测试发送（与 UDP 发送器风格一致）
+
+使用前请先在上位机选择 `TCP` 并连接监听端口（默认 `9999`）。
+
+```bash
+# 帮助
+python tools/tcp_sender.py --help
+
+# 正弦波 3 通道
+python tools/tcp_sender.py --host 127.0.0.1 --port 9999 --type sine --channels 3 --frequency 1.0 --duration 10 --rate 50
+
+# 随机波形 3 通道
+python tools/tcp_sender.py --host 127.0.0.1 --port 9999 --type random --channels 3 --duration 10 --rate 20
+
+# 自定义通道名
+python tools/tcp_sender.py --type sine --channels 3 --duration 10 --names 电压 电流 温度
+
+# 边发TCP边实时追加到文件（用于“文件源”实时读取联调）
+python tools/tcp_sender.py --host 127.0.0.1 --port 9999 --type sine --duration 30 --dump-log data/live_tcp.log
+```
+
+### 4. 生成文件测试流程（.log / .bin）
+
+```bash
+# 帮助
+python tools/generate_test_files.py --help
+
+# 生成文本协议 .log（可用于文件源+文本协议）
+python tools/generate_test_files.py --format log --channels 3 --samples 1000 --rate 50 --type sine
+
+# 生成 justfloat .bin（无时间戳）
+python tools/generate_test_files.py --format bin --channels 3 --samples 2000 --rate 100 --type sine
+
+# 生成 justfloat .bin（带时间戳）
+python tools/generate_test_files.py --format bin --channels 3 --samples 2000 --rate 100 --type sine --with-timestamp
+
+# 持续写入 .log（实时模式，Ctrl+C停止）
+python tools/generate_test_files.py --format log --rate 50 --type sine --live --output data/live_file.log
+
+# 持续写入 .bin（实时模式，Ctrl+C停止）
+python tools/generate_test_files.py --format bin --rate 100 --type sine --with-timestamp --live --output data/live_file.bin
+```
+
+文件生成后，在上位机中：
+- 选择数据源类型为 `文件`
+- 选择对应文件路径
+- `.log` 选 `文本协议`
+- `.bin` 选 `Justfloat`（根据生成参数选择带/不带时间戳）
+
+文件源实时读取说明：
+- 文件模式采用实时尾随读取（tail）策略。
+- 当 `.log/.bin` 文件有新增数据时，上位机会继续解析并实时显示/打印。
+- 可配合 `udp_sender.py` 或 `tcp_sender.py` 的 `--dump-log` 参数做在线联调。
 
 ## 界面使用
 

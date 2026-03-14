@@ -72,10 +72,6 @@ class FileDataSource(SerialDataSource):
             self._fh.close()
             self._fh = None
 
-    def _mark_eof(self) -> None:
-        self.is_connected = False
-        self._close_file()
-
     def _flush_text_tail_on_eof(self) -> None:
         """EOF时处理最后一行无换行的文本数据。"""
         if not self.text_buffer:
@@ -110,11 +106,8 @@ class FileDataSource(SerialDataSource):
             chunk = self._fh.read(self.chunk_size)
 
             if not chunk:
-                if self.protocol == 'text':
-                    self._flush_text_tail_on_eof()
-                    if self.parsed_frames:
-                        return self.parsed_frames.popleft()
-                self._mark_eof()
+                # 文件尾随读取：到达EOF不主动断开，等待外部追加数据。
+                # 不清空text_buffer，避免半包行在下一次追加后无法拼接。
                 return None
 
             self.bytes_read_count += len(chunk)
@@ -134,7 +127,8 @@ class FileDataSource(SerialDataSource):
             return None
         except Exception as e:
             print(f"读取文件数据失败: {e}")
-            self._mark_eof()
+            self._close_file()
+            self.is_connected = False
             return None
 
     def disconnect(self) -> None:
