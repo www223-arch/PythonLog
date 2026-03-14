@@ -46,6 +46,19 @@ class DataSource(ABC):
         回调函数应该由主线程调用
         """
         pass
+
+    def send_data(self, data: bytes) -> bool:
+        """发送数据（可选能力）
+
+        默认返回False，表示当前数据源不支持发送。
+
+        Args:
+            data: 待发送字节数据
+
+        Returns:
+            bool: 发送成功返回True
+        """
+        return False
     
     def configure(self, **kwargs) -> None:
         """配置数据源参数

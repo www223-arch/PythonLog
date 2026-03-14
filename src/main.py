@@ -18,7 +18,13 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient, QKeySequence
 
-from data_sources.manager import DataSourceManager, create_udp_source, create_serial_source
+from data_sources.manager import (
+    DataSourceManager,
+    create_udp_source,
+    create_tcp_source,
+    create_serial_source,
+    create_file_source,
+)
 from visualization.waveform_widget import WaveformWidget
 from enum import Enum
 
@@ -774,7 +780,7 @@ class MainWindow(QMainWindow):
         source_layout = QFormLayout()
         
         self.source_type_combo = QComboBox()
-        self.source_type_combo.addItems(["UDP", "串口"])
+        self.source_type_combo.addItems(["UDP", "TCP", "串口", "文件"])
         self.source_type_combo.currentTextChanged.connect(self.on_source_type_changed)
         source_layout.addRow("数据源类型:", self.source_type_combo)
         
@@ -787,15 +793,32 @@ class MainWindow(QMainWindow):
         
         self.host_edit = QLineEdit("0.0.0.0")
         self.port_edit = QLineEdit("8888")
+        self.udp_send_host_edit = QLineEdit("127.0.0.1")
+        self.udp_send_port_edit = QLineEdit("8888")
         
         udp_layout.addRow("主机地址:", self.host_edit)
         udp_layout.addRow("端口:", self.port_edit)
+        udp_layout.addRow("发送目标IP:", self.udp_send_host_edit)
+        udp_layout.addRow("发送目标端口:", self.udp_send_port_edit)
         
         self.udp_group.setLayout(udp_layout)
         layout.addWidget(self.udp_group)
+
+        # TCP配置组
+        self.tcp_group = QGroupBox("TCP配置")
+        tcp_layout = QFormLayout()
+
+        self.tcp_host_edit = QLineEdit("0.0.0.0")
+        self.tcp_port_edit = QLineEdit("9999")
+        tcp_layout.addRow("监听地址:", self.tcp_host_edit)
+        tcp_layout.addRow("监听端口:", self.tcp_port_edit)
+
+        self.tcp_group.setLayout(tcp_layout)
+        self.tcp_group.setVisible(False)
+        layout.addWidget(self.tcp_group)
         
         # 串口配置组
-        self.serial_group = QGroupBox("串口配置")
+        self.serial_group = QGroupBox("串口/USB 配置")
         serial_layout = QFormLayout()
         
         self.serial_port_combo = QComboBox()
@@ -818,6 +841,31 @@ class MainWindow(QMainWindow):
         
         self.serial_group.setLayout(serial_layout)
         layout.addWidget(self.serial_group)
+
+        # 文件配置组
+        self.file_group = QGroupBox("文件配置")
+        file_layout = QFormLayout()
+
+        self.file_path_edit = QLineEdit()
+        self.file_path_edit.setPlaceholderText("选择 .log 或 .bin 文件")
+        self.file_browse_btn = QPushButton("浏览...")
+        self.file_browse_btn.clicked.connect(self.browse_input_file)
+
+        file_path_layout = QHBoxLayout()
+        file_path_layout.addWidget(self.file_path_edit)
+        file_path_layout.addWidget(self.file_browse_btn)
+
+        self.file_protocol_combo = QComboBox()
+        self.file_protocol_combo.addItems(["文本协议", "Justfloat", "Rawdata"])
+        self.file_protocol_combo.setCurrentText("文本协议")
+        self.file_protocol_combo.currentTextChanged.connect(self.on_file_protocol_changed)
+
+        file_layout.addRow("文件路径:", file_path_layout)
+        file_layout.addRow("通信协议:", self.file_protocol_combo)
+
+        self.file_group.setLayout(file_layout)
+        self.file_group.setVisible(False)
+        layout.addWidget(self.file_group)
         
         # 数据校验头配置（公用的）
         
@@ -880,6 +928,28 @@ class MainWindow(QMainWindow):
         
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
+
+        # 数据发送控制
+        send_group = QGroupBox("数据发送")
+        send_layout = QVBoxLayout()
+
+        self.send_edit = QLineEdit()
+        self.send_edit.setPlaceholderText("输入发送内容（文本模式会自动补换行）")
+        self.send_edit.returnPressed.connect(self.send_current_data)
+
+        self.send_btn = QPushButton("发送")
+        self.send_btn.clicked.connect(self.send_current_data)
+        self.send_btn.setEnabled(False)
+
+        self.send_result_label = QLabel("发送状态: 未发送")
+        self.send_result_label.setStyleSheet("color: #666;")
+
+        send_layout.addWidget(self.send_edit)
+        send_layout.addWidget(self.send_btn)
+        send_layout.addWidget(self.send_result_label)
+
+        send_group.setLayout(send_layout)
+        layout.addWidget(send_group)
         
         # 通道配置组
         channel_group = QGroupBox("通道配置")
@@ -1186,6 +1256,7 @@ class MainWindow(QMainWindow):
         # 设置初始UI状态
         self.on_source_type_changed(self.source_type_combo.currentText())
         self.on_protocol_changed(self.protocol_combo.currentText())
+        self.on_file_protocol_changed(self.file_protocol_combo.currentText())
 
     def _on_encoding_changed(self, text: str):
         """编码格式改变时更新缓存"""
@@ -1299,6 +1370,8 @@ class MainWindow(QMainWindow):
         self.status_label.setText("未连接")
         self.status_label.setStyleSheet("color: red;")
         self.pause_btn.setEnabled(False)
+        self.send_btn.setEnabled(False)
+        self.send_result_label.setText("发送状态: 未发送")
         # 启用数据源类型选择
         self.source_type_combo.setEnabled(True)
         self.data_count = 0
@@ -1378,37 +1451,76 @@ class MainWindow(QMainWindow):
             host = self.host_edit.text()
             port = int(self.port_edit.text())
             data_source = create_udp_source(host, port)
+            send_host = self.udp_send_host_edit.text().strip() or "127.0.0.1"
+            send_port = int(self.udp_send_port_edit.text())
+            data_source.set_send_target(send_host, send_port)
             return data_source, f"已连接到UDP {host}:{port}，数据校验头: {header}", None
 
-        # 串口数据源
-        serial_port = self.serial_port_combo.currentData()  # 获取实际的串口号（如COM1）
-        if not serial_port:
-            QMessageBox.warning(self, "错误", "请选择有效的串口")
+        if source_type == "TCP":
+            host = self.tcp_host_edit.text()
+            port = int(self.tcp_port_edit.text())
+            data_source = create_tcp_source(host, port)
+            return data_source, f"已监听TCP {host}:{port}，协议: UDP同格式", None
+
+        if source_type == "串口":
+            serial_port = self.serial_port_combo.currentData()  # 获取实际的串口号（如COM1）
+            if not serial_port:
+                QMessageBox.warning(self, "错误", "请选择有效的端口")
+                return None, None, None
+
+            baudrate = int(self.baudrate_combo.currentText())
+            protocol_text = self.protocol_combo.currentText()
+            source_label = "串口"
+            source_factory = create_serial_source
+
+            if protocol_text == '文本协议':
+                protocol = 'text'
+                serial_header = header
+                data_source = source_factory(serial_port, baudrate, protocol, serial_header)
+                return data_source, f"已连接到{source_label} {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {serial_header}", None
+
+            if protocol_text == 'Justfloat':
+                protocol = 'justfloat'
+                serial_header = ''
+                justfloat_mode_text = self.justfloat_mode_combo.currentText()
+                justfloat_mode = 'with_timestamp' if justfloat_mode_text == '带时间戳' else 'without_timestamp'
+                delta_t = float(self.delta_t_edit.text()) if self.delta_t_edit.text() else 1.0
+                data_source = source_factory(serial_port, baudrate, protocol, serial_header, justfloat_mode, delta_t)
+                return data_source, f"已连接到{source_label} {serial_port} @ {baudrate}bps，协议: {protocol_text}", justfloat_mode
+
+            protocol = 'rawdata'
+            serial_header = ''
+            data_source = source_factory(serial_port, baudrate, protocol, serial_header)
+            return data_source, f"已连接到{source_label} {serial_port} @ {baudrate}bps，协议: {protocol_text}", None
+
+        # 文件数据源
+        file_path = self.file_path_edit.text().strip()
+        if not file_path or not os.path.isfile(file_path):
+            QMessageBox.warning(self, "错误", "请选择有效的 .log 或 .bin 文件")
             return None, None, None
 
-        baudrate = int(self.baudrate_combo.currentText())
-        protocol_text = self.protocol_combo.currentText()
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext not in ('.log', '.bin'):
+            QMessageBox.warning(self, "错误", "仅支持 .log 或 .bin 文件")
+            return None, None, None
 
+        protocol_text = self.file_protocol_combo.currentText()
         if protocol_text == '文本协议':
             protocol = 'text'
-            serial_header = header  # 文本协议使用公用的数据校验头
-            data_source = create_serial_source(serial_port, baudrate, protocol, serial_header)
-            return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {serial_header}", None
+            file_header = header
+            data_source = create_file_source(file_path, protocol, file_header)
+            return data_source, f"已连接到文件 {file_path}，协议: {protocol_text}，数据校验头: {file_header}", None
 
         if protocol_text == 'Justfloat':
             protocol = 'justfloat'
-            serial_header = ''  # Justfloat不使用数据校验头
             justfloat_mode_text = self.justfloat_mode_combo.currentText()
             justfloat_mode = 'with_timestamp' if justfloat_mode_text == '带时间戳' else 'without_timestamp'
             delta_t = float(self.delta_t_edit.text()) if self.delta_t_edit.text() else 1.0
-            data_source = create_serial_source(serial_port, baudrate, protocol, serial_header, justfloat_mode, delta_t)
-            return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}", justfloat_mode
+            data_source = create_file_source(file_path, protocol, '', justfloat_mode, delta_t)
+            return data_source, f"已连接到文件 {file_path}，协议: {protocol_text}", justfloat_mode
 
-        # Rawdata
-        protocol = 'rawdata'
-        serial_header = ''
-        data_source = create_serial_source(serial_port, baudrate, protocol, serial_header)
-        return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}", None
+        data_source = create_file_source(file_path, 'rawdata', '')
+        return data_source, f"已连接到文件 {file_path}，协议: {protocol_text}", None
 
     def _connect_flow(self):
         """连接编排层：统一处理连接流程（不改业务语义）"""
@@ -1442,6 +1554,7 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("已连接")
                 self.status_label.setStyleSheet("color: green;")
                 self.pause_btn.setEnabled(True)
+                self.send_btn.setEnabled(source_type in ("UDP", "TCP", "串口"))
                 # 禁用数据源类型选择
                 self.source_type_combo.setEnabled(False)
                 # 启动数据接收线程
@@ -1477,14 +1590,54 @@ class MainWindow(QMainWindow):
         """
         if source_type == "UDP":
             self.udp_group.setVisible(True)
+            self.tcp_group.setVisible(False)
             self.serial_group.setVisible(False)
+            self.file_group.setVisible(False)
             # UDP模式：启用数据校验头配置
             self.header_group.setEnabled(True)
-        else:
+            self.justfloat_group.setVisible(False)
+            self.header_group.setVisible(True)
+            return
+
+        if source_type == "TCP":
             self.udp_group.setVisible(False)
+            self.tcp_group.setVisible(True)
+            self.serial_group.setVisible(False)
+            self.file_group.setVisible(False)
+            self.header_group.setEnabled(True)
+            self.justfloat_group.setVisible(False)
+            self.header_group.setVisible(True)
+            return
+
+        if source_type == "串口":
+            self.udp_group.setVisible(False)
+            self.tcp_group.setVisible(False)
             self.serial_group.setVisible(True)
+            self.file_group.setVisible(False)
+            self.serial_group.setTitle("串口配置")
             # 根据协议类型控制数据校验头配置的启用/禁用
             self.on_protocol_changed(self.protocol_combo.currentText())
+            return
+
+        # 文件
+        self.udp_group.setVisible(False)
+        self.tcp_group.setVisible(False)
+        self.serial_group.setVisible(False)
+        self.file_group.setVisible(True)
+        self.on_file_protocol_changed(self.file_protocol_combo.currentText())
+
+    def _apply_protocol_ui(self, protocol_text: str):
+        """统一处理协议相关UI显隐，供串口/文件复用。"""
+        if protocol_text == "文本协议":
+            self.header_group.setVisible(True)
+            self.justfloat_group.setVisible(False)
+        elif protocol_text == "Justfloat":
+            self.header_group.setVisible(False)
+            self.justfloat_group.setVisible(True)
+            self.on_justfloat_mode_changed(self.justfloat_mode_combo.currentText())
+        else:  # Rawdata
+            self.header_group.setVisible(False)
+            self.justfloat_group.setVisible(False)
     
     def refresh_serial_ports(self):
         """刷新串口列表，扫描所有可用的COM端口"""
@@ -1529,23 +1682,56 @@ class MainWindow(QMainWindow):
         Args:
             protocol_text: 协议文本（文本协议、Justfloat、Rawdata）
         """
-        if protocol_text == "文本协议":
-            # 文本协议：显示数据校验头配置
-            self.header_group.setVisible(True)
-            # 隐藏Justfloat配置组
-            self.justfloat_group.setVisible(False)
-        elif protocol_text == "Justfloat":
-            # Justfloat：隐藏数据校验头配置
-            self.header_group.setVisible(False)
-            # 显示Justfloat配置组
-            self.justfloat_group.setVisible(True)
-            # 根据Justfloat模式显示/隐藏Δt设置
-            self.on_justfloat_mode_changed(self.justfloat_mode_combo.currentText())
-        else:  # Rawdata
-            # Rawdata：隐藏数据校验头配置
-            self.header_group.setVisible(False)
-            # 隐藏Justfloat配置组
-            self.justfloat_group.setVisible(False)
+        self._apply_protocol_ui(protocol_text)
+
+    def on_file_protocol_changed(self, protocol_text: str):
+        """文件协议改变事件处理。"""
+        self._apply_protocol_ui(protocol_text)
+
+    def browse_input_file(self):
+        """浏览输入数据文件（.log/.bin）。"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择数据文件",
+            self.file_path_edit.text() or os.getcwd(),
+            "数据文件 (*.log *.bin);;所有文件 (*)",
+        )
+        if file_path:
+            self.file_path_edit.setText(file_path)
+
+    def send_current_data(self):
+        """通过当前数据源发送文本数据。"""
+        if not self.data_source_manager.is_connected():
+            self.send_result_label.setText("发送状态: 失败（未连接）")
+            self.send_result_label.setStyleSheet("color: red;")
+            return
+
+        text = self.send_edit.text()
+        if not text:
+            return
+
+        source_type = self.source_type_combo.currentText()
+        protocol_text = None
+        if source_type == "串口":
+            protocol_text = self.protocol_combo.currentText()
+        elif source_type == "文件":
+            protocol_text = self.file_protocol_combo.currentText()
+        else:
+            protocol_text = "文本协议"
+
+        payload = text
+        if protocol_text == "文本协议" and not payload.endswith("\n"):
+            payload += "\n"
+
+        success = self.data_source_manager.send_data(payload.encode('utf-8'))
+        if success:
+            self.send_result_label.setText("发送状态: 成功")
+            self.send_result_label.setStyleSheet("color: green;")
+            self.log_print(f"[发送] {source_type} 发送成功: {text}")
+        else:
+            self.send_result_label.setText("发送状态: 失败（当前源不支持或目标不可达）")
+            self.send_result_label.setStyleSheet("color: red;")
+            self.log_print(f"[发送] {source_type} 发送失败: {text}")
     
     def on_justfloat_mode_changed(self, mode_text: str):
         """Justfloat模式改变事件处理

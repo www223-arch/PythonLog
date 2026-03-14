@@ -458,3 +458,15 @@ class SerialDataSource(DataSource):
             协议类型：'text', 'justfloat', 'rawdata'
         """
         return self.protocol
+
+    def send_data(self, data: bytes) -> bool:
+        """发送数据到串口。"""
+        if not self.is_connected or not self.serial:
+            return False
+
+        try:
+            self.serial.write(data)
+            return True
+        except Exception as e:
+            print(f"串口发送失败: {e}")
+            return False

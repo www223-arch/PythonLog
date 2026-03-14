@@ -8,6 +8,7 @@ import time
 from typing import Optional, Dict, Any, List
 from .base import DataSource
 from .udp_source import UDPDataSource
+from .tcp_source import TCPDataSource
 from .data_saver import DataSaver
 
 
@@ -280,6 +281,17 @@ class DataSourceManager:
             当前数据源对象，如果没有返回None
         """
         return self.current_source
+
+    def send_data(self, data: bytes) -> bool:
+        """通过当前数据源发送数据。"""
+        if not self.current_source:
+            return False
+
+        try:
+            return bool(self.current_source.send_data(data))
+        except Exception as e:
+            print(f"发送数据失败: {e}")
+            return False
     
     def get_channels(self) -> List[str]:
         """获取所有通道名称
@@ -511,6 +523,19 @@ def create_udp_source(host: str = '0.0.0.0', port: int = 8888) -> UDPDataSource:
     return UDPDataSource(host, port)
 
 
+def create_tcp_source(host: str = '0.0.0.0', port: int = 9999) -> TCPDataSource:
+    """创建TCP数据源（服务端监听模式）
+
+    Args:
+        host: 监听主机地址
+        port: 监听端口
+
+    Returns:
+        TCP数据源对象
+    """
+    return TCPDataSource(host, port)
+
+
 def create_serial_source(port: str = 'COM1', baudrate: int = 115200, protocol: str = 'text', data_header: str = 'DATA', justfloat_mode: str = 'without_timestamp', delta_t: float = 1.0):
     """创建串口数据源
     
@@ -527,3 +552,20 @@ def create_serial_source(port: str = 'COM1', baudrate: int = 115200, protocol: s
     """
     from .serial_source import SerialDataSource
     return SerialDataSource(port, baudrate, protocol, data_header, justfloat_mode, delta_t)
+
+
+def create_file_source(file_path: str, protocol: str = 'text', data_header: str = 'DATA', justfloat_mode: str = 'without_timestamp', delta_t: float = 1.0):
+    """创建文件数据源
+
+    Args:
+        file_path: 文件路径（支持.log/.bin）
+        protocol: 协议类型，'text'/'justfloat'/'rawdata'
+        data_header: 数据校验头
+        justfloat_mode: Justfloat模式，'without_timestamp'或'with_timestamp'
+        delta_t: 数据点间隔（ms），仅用于无时间戳模式
+
+    Returns:
+        文件数据源对象
+    """
+    from .file_source import FileDataSource
+    return FileDataSource(file_path, protocol, data_header, justfloat_mode, delta_t)

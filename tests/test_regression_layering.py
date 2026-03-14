@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+import struct
 
 # 允许直接从仓库根目录运行: python -m unittest
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -9,8 +10,9 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from src.data_sources.base import DataSource
-from src.data_sources.manager import DataSourceManager
+from src.data_sources.manager import DataSourceManager, create_file_source, create_tcp_source
 from src.data_sources.serial_source import SerialDataSource
+from src.data_sources.tcp_source import TCPDataSource
 
 
 class FakeSource(DataSource):
@@ -53,7 +55,40 @@ class NoProtocolSource(DataSource):
         self.is_connected = False
 
 
+class SendCapableSource(DataSource):
+    def __init__(self):
+        super().__init__()
+        self.last_sent = None
+
+    def connect(self) -> bool:
+        self.is_connected = True
+        return True
+
+    def read_data(self):
+        return None
+
+    def disconnect(self) -> None:
+        self.is_connected = False
+
+    def send_data(self, data: bytes) -> bool:
+        self.last_sent = data
+        return True
+
+
 class ManagerLayeringRegressionTests(unittest.TestCase):
+    def test_tcp_factory_returns_tcp_source(self):
+        src = create_tcp_source('0.0.0.0', 9999)
+        self.assertIsInstance(src, TCPDataSource)
+
+    def test_manager_send_data_routes_to_current_source(self):
+        manager = DataSourceManager()
+        self.assertFalse(manager.send_data(b'hello'))
+
+        src = SendCapableSource()
+        self.assertTrue(manager.set_source(src))
+        self.assertTrue(manager.send_data(b'ping'))
+        self.assertEqual(src.last_sent, b'ping')
+
     def test_get_delta_t_is_safe_for_non_protocol_source(self):
         manager = DataSourceManager()
         src = NoProtocolSource()
@@ -176,6 +211,93 @@ class ManagerLayeringRegressionTests(unittest.TestCase):
             manager.stop_saving()
             self.assertTrue(os.path.exists(save_file))
             self.assertTrue(os.path.getsize(save_file) > 0)
+
+    def test_file_text_source_replay_keeps_manager_contract(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_path = os.path.join(tmp_dir, 'demo.log')
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('DATA,1.0,a=1.5,b=2.5\n')
+                f.write('DATA,2.0,a=3.5,b=4.5\n')
+
+            manager = DataSourceManager()
+            src = create_file_source(file_path, protocol='text', data_header='DATA')
+            self.assertTrue(manager.set_source(src))
+
+            frame1 = manager.read_frame()
+            self.assertIsNotNone(frame1)
+            self.assertEqual(frame1['channels']['a'], 1.5)
+            self.assertEqual(frame1['channels']['b'], 2.5)
+
+            frame2 = manager.read_frame()
+            self.assertIsNotNone(frame2)
+            self.assertEqual(frame2['channels']['a'], 3.5)
+
+            # 到达EOF后保持连接，等待文件追加数据
+            while manager.read_frame() is not None:
+                pass
+            self.assertTrue(src.is_connected)
+
+    def test_file_justfloat_without_timestamp_replay(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_path = os.path.join(tmp_dir, 'demo.bin')
+            frame_tail = bytes([0x00, 0x00, 0x80, 0x7f])
+            payload = struct.pack('2f', 1.0, 2.0) + frame_tail
+            payload += struct.pack('2f', 3.0, 4.0) + frame_tail
+
+            with open(file_path, 'wb') as f:
+                f.write(payload)
+
+            manager = DataSourceManager()
+            src = create_file_source(
+                file_path,
+                protocol='justfloat',
+                justfloat_mode='without_timestamp',
+                delta_t=2.0,
+            )
+            self.assertTrue(manager.set_source(src))
+
+            frame1 = manager.read_frame()
+            frame2 = manager.read_frame()
+            self.assertIsNotNone(frame1)
+            self.assertIsNotNone(frame2)
+            self.assertAlmostEqual(frame1['timestamp'], 0.0, places=6)
+            self.assertAlmostEqual(frame2['timestamp'], 2.0, places=6)
+
+            while manager.read_frame() is not None:
+                pass
+            self.assertTrue(src.is_connected)
+
+    def test_file_text_source_can_tail_new_appended_lines(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_path = os.path.join(tmp_dir, 'tail.log')
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('DATA,0.0,a=1.0\n')
+
+            manager = DataSourceManager()
+            src = create_file_source(file_path, protocol='text', data_header='DATA')
+            self.assertTrue(manager.set_source(src))
+
+            frame1 = manager.read_frame()
+            self.assertIsNotNone(frame1)
+            self.assertEqual(frame1['channels']['a'], 1.0)
+
+            # 到达EOF时无数据返回None，但保持连接
+            self.assertIsNone(manager.read_frame())
+            self.assertTrue(src.is_connected)
+
+            # 追加新行后应可继续读取
+            with open(file_path, 'a', encoding='utf-8') as f:
+                f.write('DATA,0.02,a=2.5\n')
+                f.flush()
+
+            frame2 = None
+            for _ in range(10):
+                frame2 = manager.read_frame()
+                if frame2 is not None:
+                    break
+
+            self.assertIsNotNone(frame2)
+            self.assertEqual(frame2['channels']['a'], 2.5)
 
 
 if __name__ == '__main__':
