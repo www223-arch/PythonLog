@@ -11,13 +11,402 @@ import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut, QComboBox, QTextEdit, QSplitter)
+                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut, QComboBox, QTextEdit, QSplitter, QInputDialog)
 from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize
 from PyQt5.QtCore import Qt, QTimer, QDateTime
 from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient, QKeySequence
 
 from data_sources.manager import DataSourceManager, create_udp_source
 from visualization.waveform_widget import WaveformWidget
+from enum import Enum
+
+
+class ConnectionState(Enum):
+    """连接状态枚举"""
+    DISCONNECTED = "未连接"
+    CONNECTED_WAITING = "已连接-等待数据"
+    CONNECTED_RECEIVING = "已连接-接收数据"
+    DATA_FORMAT_MISMATCH = "数据格式不匹配"
+    DATA_STOPPED = "数据停止"
+    PAUSED = "暂停"
+
+
+class State:
+    """状态基类"""
+    
+    def __init__(self, state_machine: 'StateMachine'):
+        self.state_machine = state_machine
+    
+    def enter(self) -> None:
+        """进入状态时调用"""
+        pass
+    
+    def exit(self) -> None:
+        """退出状态时调用"""
+        pass
+    
+    def handle_event(self, event: str, **kwargs) -> None:
+        """处理事件
+        
+        Args:
+            event: 事件名称
+            **kwargs: 事件参数
+        """
+        pass
+
+
+class DisconnectedState(State):
+    """未连接状态"""
+    
+    def enter(self) -> None:
+        """进入状态"""
+        context = self.state_machine.context
+        # 更新UI
+        context.connect_btn.set_color(QColor(100, 100, 100))  # 灰色
+        context.connect_btn.stop_flashing()
+        context.data_status_label.setText("数据状态: 无数据")
+        context.data_status_label.setStyleSheet("color: #666;")
+        print(f"[状态] 进入未连接状态")
+    
+    def handle_event(self, event: str, **kwargs) -> None:
+        """处理事件"""
+        if event == 'connect':
+            self.state_machine.transition_to(ConnectedWaitingState(self.state_machine))
+
+
+class ConnectedWaitingState(State):
+    """已连接-等待数据状态"""
+    
+    def enter(self) -> None:
+        """进入状态"""
+        context = self.state_machine.context
+        # 更新UI
+        context.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
+        context.connect_btn.stop_flashing()
+        context.data_status_label.setText("数据状态: 等待数据")
+        context.data_status_label.setStyleSheet("color: #666;")
+        print(f"[状态] 进入等待数据状态")
+    
+    def handle_event(self, event: str, **kwargs) -> None:
+        """处理事件"""
+        if event == 'data_received':
+            self.state_machine.transition_to(ConnectedReceivingState(self.state_machine))
+        elif event == 'format_error':
+            self.state_machine.transition_to(DataFormatMismatchState(self.state_machine))
+        elif event == 'disconnect':
+            self.state_machine.transition_to(DisconnectedState(self.state_machine))
+
+
+class ConnectedReceivingState(State):
+    """已连接-接收数据状态"""
+    
+    def enter(self) -> None:
+        """进入状态"""
+        context = self.state_machine.context
+        # 更新UI
+        context.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
+        context.connect_btn.start_flashing(100)  # 100ms闪烁
+        context.data_status_label.setText("数据状态: 正常接收")
+        context.data_status_label.setStyleSheet("color: green;")
+        print(f"[状态] 进入接收数据状态")
+    
+    def handle_event(self, event: str, **kwargs) -> None:
+        """处理事件"""
+        if event == 'timeout':
+            self.state_machine.transition_to(DataStoppedState(self.state_machine))
+        elif event == 'format_error':
+            self.state_machine.transition_to(DataFormatMismatchState(self.state_machine))
+        elif event == 'pause':
+            self.state_machine.transition_to(PausedState(self.state_machine))
+        elif event == 'disconnect':
+            self.state_machine.transition_to(DisconnectedState(self.state_machine))
+
+
+class DataFormatMismatchState(State):
+    """数据格式不匹配状态"""
+    
+    def __init__(self, state_machine: 'StateMachine'):
+        super().__init__(state_machine)
+        self.mismatch_count = 0
+    
+    def enter(self) -> None:
+        """进入状态"""
+        context = self.state_machine.context
+        # 更新UI
+        context.connect_btn.set_color(QColor(220, 20, 60))  # 红色
+        context.connect_btn.start_flashing(500)  # 500ms闪烁
+        context.data_status_label.setText(f"数据状态: 数据格式不匹配 ({self.mismatch_count}次)")
+        context.data_status_label.setStyleSheet("color: red;")
+        print(f"[状态] 进入数据格式不匹配状态，次数: {self.mismatch_count}")
+    
+    def handle_event(self, event: str, **kwargs) -> None:
+        """处理事件"""
+        if event == 'data_received':
+            self.state_machine.transition_to(ConnectedReceivingState(self.state_machine))
+        elif event == 'timeout':
+            self.state_machine.transition_to(DataStoppedState(self.state_machine))
+        elif event == 'format_error':
+            # 更新不匹配次数
+            self.mismatch_count = kwargs.get('mismatch_count', self.mismatch_count + 1)
+            # 更新UI
+            context = self.state_machine.context
+            context.data_status_label.setText(f"数据状态: 数据格式不匹配 ({self.mismatch_count}次)")
+            print(f"[状态] 更新数据格式不匹配次数: {self.mismatch_count}")
+        elif event == 'disconnect':
+            self.state_machine.transition_to(DisconnectedState(self.state_machine))
+
+
+class DataStoppedState(State):
+    """数据停止状态"""
+    
+    def enter(self) -> None:
+        """进入状态"""
+        context = self.state_machine.context
+        # 更新UI
+        context.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
+        context.connect_btn.stop_flashing()
+        context.data_status_label.setText("数据状态: 数据停止")
+        context.data_status_label.setStyleSheet("color: #666;")
+        print(f"[状态] 进入数据停止状态")
+    
+    def handle_event(self, event: str, **kwargs) -> None:
+        """处理事件"""
+        if event == 'data_received':
+            self.state_machine.transition_to(ConnectedReceivingState(self.state_machine))
+        elif event == 'format_error':
+            self.state_machine.transition_to(DataFormatMismatchState(self.state_machine))
+        elif event == 'disconnect':
+            self.state_machine.transition_to(DisconnectedState(self.state_machine))
+
+
+class PausedState(State):
+    """暂停状态"""
+    
+    def enter(self) -> None:
+        """进入状态"""
+        context = self.state_machine.context
+        # 更新UI
+        context.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
+        context.connect_btn.stop_flashing()
+        context.data_status_label.setText("数据状态: 已暂停")
+        context.data_status_label.setStyleSheet("color: #666;")
+        print(f"[状态] 进入暂停状态")
+    
+    def handle_event(self, event: str, **kwargs) -> None:
+        """处理事件"""
+        if event == 'resume':
+            self.state_machine.transition_to(ConnectedReceivingState(self.state_machine))
+        elif event == 'disconnect':
+            self.state_machine.transition_to(DisconnectedState(self.state_machine))
+
+
+class StateMachine:
+    """有限状态机"""
+    
+    def __init__(self, context: 'MainWindow'):
+        self.context = context
+        self.current_state = None
+        # 初始状态为未连接
+        self.transition_to(DisconnectedState(self))
+    
+    def transition_to(self, new_state: State) -> None:
+        """转换到新状态
+        
+        Args:
+            new_state: 新状态
+        """
+        if self.current_state:
+            print(f"[状态机] 退出状态: {self.current_state.__class__.__name__}")
+            self.current_state.exit()
+        
+        print(f"[状态机] 进入状态: {new_state.__class__.__name__}")
+        self.current_state = new_state
+        self.current_state.enter()
+    
+    def handle_event(self, event: str, **kwargs) -> None:
+        """处理事件
+        
+        Args:
+            event: 事件名称
+            **kwargs: 事件参数
+        """
+        print(f"[状态机] 处理事件: {event}, 参数: {kwargs}")
+        if self.current_state:
+            self.current_state.handle_event(event, **kwargs)
+    
+    def get_current_state_name(self) -> str:
+        """获取当前状态名称
+        
+        Returns:
+            当前状态名称
+        """
+        if self.current_state:
+            return self.current_state.__class__.__name__
+        return "None"
+    
+    def is_connected(self) -> bool:
+        """是否已连接
+        
+        Returns:
+            True表示已连接，False表示未连接
+        """
+        return not isinstance(self.current_state, DisconnectedState)
+    
+    def is_receiving(self) -> bool:
+        """是否正在接收数据
+        
+        Returns:
+            True表示正在接收数据，False表示未接收
+        """
+        return isinstance(self.current_state, ConnectedReceivingState)
+    
+    def is_paused(self) -> bool:
+        """是否暂停
+        
+        Returns:
+            True表示暂停，False表示未暂停
+        """
+        return isinstance(self.current_state, PausedState)
+
+
+class ConnectionStateManager:
+    """连接状态管理器 - 管理所有状态转换和UI更新"""
+    
+    def __init__(self, connect_btn: 'CircularButton', data_status_label: QLabel):
+        """初始化状态管理器
+        
+        Args:
+            connect_btn: 连接按钮
+            data_status_label: 数据状态标签
+        """
+        self.connect_btn = connect_btn
+        self.data_status_label = data_status_label
+        self.current_state = ConnectionState.DISCONNECTED
+        
+        # 状态配置
+        self.state_config = {
+            ConnectionState.DISCONNECTED: {
+                'button_color': QColor(100, 100, 100),  # 灰色
+                'flashing': False,
+                'flash_interval': 0,
+                'data_status_text': '数据状态: 无数据',
+                'data_status_color': '#666'
+            },
+            ConnectionState.CONNECTED_WAITING: {
+                'button_color': QColor(100, 149, 237),  # 蓝色
+                'flashing': False,
+                'flash_interval': 0,
+                'data_status_text': '数据状态: 等待数据',
+                'data_status_color': '#666'
+            },
+            ConnectionState.CONNECTED_RECEIVING: {
+                'button_color': QColor(100, 149, 237),  # 蓝色
+                'flashing': True,
+                'flash_interval': 100,
+                'data_status_text': '数据状态: 正常接收',
+                'data_status_color': 'green'
+            },
+            ConnectionState.DATA_FORMAT_MISMATCH: {
+                'button_color': QColor(220, 20, 60),  # 红色
+                'flashing': True,
+                'flash_interval': 500,
+                'data_status_text': '数据状态: 数据格式不匹配',
+                'data_status_color': 'red'
+            },
+            ConnectionState.DATA_STOPPED: {
+                'button_color': QColor(100, 149, 237),  # 蓝色
+                'flashing': False,
+                'flash_interval': 0,
+                'data_status_text': '数据状态: 数据停止',
+                'data_status_color': '#666'
+            },
+            ConnectionState.PAUSED: {
+                'button_color': QColor(100, 149, 237),  # 蓝色
+                'flashing': False,
+                'flash_interval': 0,
+                'data_status_text': '数据状态: 已暂停',
+                'data_status_color': '#666'
+            }
+        }
+    
+    def transition_to(self, new_state: ConnectionState, **kwargs):
+        """转换到新状态
+        
+        Args:
+            new_state: 新状态
+            **kwargs: 额外参数（如数据格式不匹配次数）
+        """
+        print(f"[状态转换] 当前状态: {self.current_state}, 新状态: {new_state}")
+        if new_state == self.current_state:
+            # 状态相同，只更新动态内容
+            self._update_dynamic_content(new_state, **kwargs)
+            return
+        
+        # 状态不同，执行完整的状态转换
+        self.current_state = new_state
+        config = self.state_config[new_state]
+        
+        print(f"[状态转换] 执行状态转换: {new_state}")
+        
+        # 更新按钮
+        self.connect_btn.set_color(config['button_color'])
+        if config['flashing']:
+            self.connect_btn.start_flashing(config['flash_interval'])
+        else:
+            self.connect_btn.stop_flashing()
+        
+        # 更新数据状态标签
+        self.data_status_label.setText(config['data_status_text'])
+        self.data_status_label.setStyleSheet(f"color: {config['data_status_color']};")
+        
+        # 更新动态内容
+        self._update_dynamic_content(new_state, **kwargs)
+    
+    def _update_dynamic_content(self, state: ConnectionState, **kwargs):
+        """更新动态内容
+        
+        Args:
+            state: 当前状态
+            **kwargs: 额外参数
+        """
+        if state == ConnectionState.DATA_FORMAT_MISMATCH:
+            # 更新数据格式不匹配次数
+            mismatch_count = kwargs.get('mismatch_count', 0)
+            if mismatch_count > 0:
+                self.data_status_label.setText(f"数据状态: 数据格式不匹配 ({mismatch_count}次)")
+    
+    def get_current_state(self) -> ConnectionState:
+        """获取当前状态
+        
+        Returns:
+            当前状态
+        """
+        return self.current_state
+    
+    def is_connected(self) -> bool:
+        """是否已连接
+        
+        Returns:
+            True表示已连接，False表示未连接
+        """
+        return self.current_state != ConnectionState.DISCONNECTED
+    
+    def is_receiving(self) -> bool:
+        """是否正在接收数据
+        
+        Returns:
+            True表示正在接收数据，False表示未接收
+        """
+        return self.current_state == ConnectionState.CONNECTED_RECEIVING
+    
+    def is_paused(self) -> bool:
+        """是否暂停
+        
+        Returns:
+            True表示暂停，False表示未暂停
+        """
+        return self.current_state == ConnectionState.PAUSED
+
 
 
 class CircularButton(QPushButton):
@@ -197,7 +586,7 @@ class MainWindow(QMainWindow):
         self.baudrate_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
         self.baudrate_combo.setCurrentText("115200")
         self.protocol_combo = QComboBox()
-        self.protocol_combo.addItems(["文本协议", "二进制协议"])
+        self.protocol_combo.addItems(["文本协议", "Justfloat", "Rawdata"])
         self.protocol_combo.setCurrentText("文本协议")
         self.protocol_combo.currentTextChanged.connect(self.on_protocol_changed)
         
@@ -390,7 +779,34 @@ class MainWindow(QMainWindow):
         self.auto_save_enabled = False
         self.last_data_time = None  # 记录最后接收数据的时间
         self.data_timeout = 1000  # 数据超时时间（毫秒）
-        self.is_flashing = False  # 标志：按钮是否在闪烁
+        
+        # 初始化状态机
+        self.state_machine = StateMachine(self)
+        
+        # 定义断开回调函数
+        def on_disconnect():
+            """数据源断开回调"""
+            print("[断开回调] 数据源已断开")
+            # 更新UI状态
+            self.status_label.setText("未连接")
+            self.status_label.setStyleSheet("color: red;")
+            self.pause_btn.setEnabled(False)
+            # 启用数据源类型选择
+            self.source_type_combo.setEnabled(True)
+            self.data_count = 0
+            self.data_count_label.setText("接收数据: 0")
+            self.save_file_label.setText("保存文件: 无")
+            self.channels_label.setText("自动检测通道...")
+            self.save_btn.setText("开始保存")
+            self.auto_save_enabled = False
+            self.clear_raw_data()  # 清空原始数据接收区
+            # 重置last_data_time
+            self.last_data_time = None
+            # 转换到未连接状态
+            self.state_machine.handle_event('disconnect')
+        
+        # 保存断开回调函数
+        self.disconnect_callback = on_disconnect
         
         # 数据更新定时器
         self.data_timer = QTimer()
@@ -418,9 +834,6 @@ class MainWindow(QMainWindow):
             self.data_source_manager.disconnect()
             self.status_label.setText("未连接")
             self.status_label.setStyleSheet("color: red;")
-            self.connect_btn.set_color(QColor(100, 100, 100))  # 灰色
-            self.connect_btn.stop_flashing()
-            self.is_flashing = False
             self.pause_btn.setEnabled(False)
             # 启用数据源类型选择
             self.source_type_combo.setEnabled(True)
@@ -428,11 +841,14 @@ class MainWindow(QMainWindow):
             self.data_count_label.setText("接收数据: 0")
             self.save_file_label.setText("保存文件: 无")
             self.channels_label.setText("自动检测通道...")
-            self.data_status_label.setText("数据状态: 无数据")
-            self.data_status_label.setStyleSheet("color: #666;")
             self.save_btn.setText("开始保存")
             self.auto_save_enabled = False
             self.clear_raw_data()  # 清空原始数据接收区
+            
+            # 转换到未连接状态
+            self.state_machine.handle_event('disconnect')
+            # 重置last_data_time，避免check_data_timeout继续检测超时
+            self.last_data_time = None
             print("数据源已断开")
         else:
             # 连接
@@ -450,6 +866,8 @@ class MainWindow(QMainWindow):
                     data_source = create_udp_source(host, port)
                     # 设置原始数据回调函数
                     data_source.set_raw_data_callback(self.on_raw_data_received)
+                    # 设置断开回调函数
+                    data_source.set_disconnect_callback(self.disconnect_callback)
                     success = self.data_source_manager.set_source(data_source)
                     
                     if success:
@@ -463,15 +881,21 @@ class MainWindow(QMainWindow):
                         return
                     baudrate = int(self.baudrate_combo.currentText())
                     protocol_text = self.protocol_combo.currentText()
-                    protocol = 'text' if protocol_text == '文本协议' else 'binary'
                     # 根据协议类型使用不同的数据校验头
-                    if protocol == 'text':
+                    if protocol_text == '文本协议':
+                        protocol = 'text'
                         serial_header = header  # 文本协议使用公用的数据校验头
-                    else:
-                        serial_header = ''  # 二进制协议不使用数据校验头
+                    elif protocol_text == 'Justfloat':
+                        protocol = 'justfloat'
+                        serial_header = ''  # Justfloat不使用数据校验头
+                    else:  # Rawdata
+                        protocol = 'rawdata'
+                        serial_header = ''  # Rawdata不使用数据校验头
                     data_source = create_serial_source(serial_port, baudrate, protocol, serial_header)
                     # 设置原始数据回调函数
                     data_source.set_raw_data_callback(self.on_raw_data_received)
+                    # 设置断开回调函数
+                    data_source.set_disconnect_callback(self.disconnect_callback)
                     success = self.data_source_manager.set_source(data_source)
                     
                     if success:
@@ -483,9 +907,6 @@ class MainWindow(QMainWindow):
                 if success:
                     self.status_label.setText("已连接")
                     self.status_label.setStyleSheet("color: green;")
-                    self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
-                    # 不开始闪烁，等收到数据后再闪烁
-                    self.is_flashing = False
                     self.pause_btn.setEnabled(True)
                     # 禁用数据源类型选择
                     self.source_type_combo.setEnabled(False)
@@ -493,8 +914,12 @@ class MainWindow(QMainWindow):
                     # 清空旧通道
                     self.waveform_widget.clear_all()
                     self.channels_label.setText("自动检测通道...")
-                    self.data_status_label.setText("数据状态: 等待数据...")
-                    self.data_status_label.setStyleSheet("color: #666;")
+                    
+                    # 重置校验头不匹配计数器
+                    self.data_source_manager.reset_header_mismatch_count()
+                    
+                    # 转换到已连接-等待数据状态
+                    self.state_machine.handle_event('connect')
                     
                     # 自动开始保存
                     save_path = self.save_path_edit.text()
@@ -570,13 +995,13 @@ class MainWindow(QMainWindow):
         """串口协议改变事件处理
         
         Args:
-            protocol_text: 协议文本（文本协议或二进制协议）
+            protocol_text: 协议文本（文本协议、Justfloat、Rawdata）
         """
         if protocol_text == "文本协议":
             # 文本协议：启用数据校验头配置
             self.header_group.setEnabled(True)
         else:
-            # 二进制协议：禁用数据校验头配置
+            # Justfloat和Rawdata：禁用数据校验头配置
             self.header_group.setEnabled(False)
     
     def browse_save_path(self):
@@ -631,8 +1056,13 @@ class MainWindow(QMainWindow):
                     text = data.decode(encoding)
                     self.raw_data_text.append(text)
                 except UnicodeDecodeError:
-                    # 解码失败，显示错误信息
-                    self.raw_data_text.append(f"[解码失败: {data.hex()}]\n")
+                    # 解码失败，检查是否是二进制数据
+                    if self._is_binary_data(data):
+                        # 二进制数据，显示提示信息
+                        self.raw_data_text.append("[二进制数据 - 请切换到十六进制格式查看]\n")
+                    else:
+                        # 非二进制数据，显示错误信息
+                        self.raw_data_text.append(f"[解码失败: {data.hex()}]\n")
             else:
                 # 十六进制格式显示
                 hex_str = data.hex(' ').upper()
@@ -652,6 +1082,34 @@ class MainWindow(QMainWindow):
             scrollbar.setValue(scrollbar.maximum())
         except Exception as e:
             print(f"显示原始数据失败: {e}")
+    
+    def _is_binary_data(self, data: bytes) -> bool:
+        """判断数据是否是二进制数据
+        
+        Args:
+            data: 原始字节数据
+        
+        Returns:
+            True表示是二进制数据，False表示是文本数据
+        """
+        if not data:
+            return False
+        
+        # 检查前100个字节（或全部字节，如果少于100个）
+        sample_size = min(100, len(data))
+        sample = data[:sample_size]
+        
+        # 统计不可打印字符的数量
+        non_printable_count = 0
+        for byte in sample:
+            # ASCII码小于32（除了\t, \n, \r）或大于126的字符被认为是不可打印的
+            if byte < 32 and byte not in (9, 10, 13):
+                non_printable_count += 1
+            elif byte > 126:
+                non_printable_count += 1
+        
+        # 如果不可打印字符超过20%，认为是二进制数据
+        return non_printable_count / sample_size > 0.2
     
     def clear_raw_data(self):
         """清空原始数据"""
@@ -691,26 +1149,21 @@ class MainWindow(QMainWindow):
             # 取消暂停
             self.waveform_widget.is_paused = False
             self.pause_btn.setText("暂停")
+            # 触发resume事件
             print("波形显示已恢复")
+            self.state_machine.handle_event('resume')
         else:
             # 暂停
             self.waveform_widget.is_paused = True
             self.pause_btn.setText("继续")
+            # 触发pause事件
             print("波形显示已暂停（数据继续接收和保存）")
+            self.state_machine.handle_event('pause')
     
     def update_data(self):
         """更新数据"""
-        if not self.data_source_manager.is_connected():
+        if not self.state_machine.is_connected():
             return
-        
-        # 检查校验头不匹配情况
-        header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
-        if header_mismatch_count > 0:
-            # 校验头不匹配，红色闪烁
-            self.connect_btn.set_color(QColor(220, 20, 60))  # 红色
-            self.connect_btn.start_flashing(500)  # 500ms闪烁间隔，更明显
-            self.data_status_label.setText(f"数据状态: 校验头不匹配 ({header_mismatch_count}次)")
-            self.data_status_label.setStyleSheet("color: red;")
         
         # 循环读取所有积压的数据
         while True:
@@ -721,22 +1174,29 @@ class MainWindow(QMainWindow):
                 # 没有更多数据，退出循环
                 break
             
-            # 如果之前有校验头不匹配，现在收到有效数据，恢复蓝色闪烁
-            if header_mismatch_count > 0:
-                self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
-                self.connect_btn.start_flashing(100)  # 蓝色快速闪烁
-                self.is_flashing = True
-                self.data_status_label.setText("数据状态: 正常接收")
-                self.data_status_label.setStyleSheet("color: green;")
+            print(f"[update_data] 收到数据: {data_dict}")
             
-            # 收到数据，开始蓝色快速闪烁
-            if not self.is_flashing:
-                # 如果按钮不在闪烁，开始闪烁
-                self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
-                self.connect_btn.start_flashing(100)  # 快速闪烁（200ms）
-                self.is_flashing = True
-                self.data_status_label.setText("数据状态: 正常接收")
-                self.data_status_label.setStyleSheet("color: green;")
+            # 检查是否是格式错误标识
+            if data_dict.get('format_error'):
+                # 格式错误，触发format_error事件
+                header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
+                print(f"[update_data] 格式错误，触发format_error事件，header_mismatch_count: {header_mismatch_count}")
+                self.state_machine.handle_event('format_error', mismatch_count=header_mismatch_count)
+                continue
+            
+            # 检查数据格式不匹配情况（在读取数据后检查）
+            header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
+            print(f"[update_data] header_mismatch_count: {header_mismatch_count}")
+            
+            if header_mismatch_count > 0:
+                # 数据格式不匹配，触发format_error事件
+                print(f"[update_data] 数据格式不匹配，触发format_error事件")
+                self.state_machine.handle_event('format_error', mismatch_count=header_mismatch_count)
+                continue
+            
+            # 数据格式正确，触发data_received事件
+            print(f"[update_data] 数据格式正确，触发data_received事件")
+            self.state_machine.handle_event('data_received')
             
             self.data_count += 1
             self.data_count_label.setText(f"接收数据: {self.data_count}")
@@ -808,19 +1268,19 @@ class MainWindow(QMainWindow):
     
     def check_data_timeout(self):
         """检查数据是否超时"""
-        if not self.data_source_manager.is_connected():
+        # 只在连接状态下才检查超时
+        if not self.state_machine.is_connected():
             return
         
         if self.last_data_time is not None:
             current_time = QDateTime.currentMSecsSinceEpoch()
             elapsed = current_time - self.last_data_time
             if elapsed > self.data_timeout:
-                # 数据超时，停止闪烁，恢复蓝色但不闪烁
-                self.connect_btn.set_color(QColor(100, 149, 237))  # 蓝色
-                self.connect_btn.stop_flashing()
-                self.is_flashing = False
-                self.data_status_label.setText("数据状态: 数据停止")
-                self.data_status_label.setStyleSheet("color: #666;")
+                # 数据超时，触发timeout事件
+                print(f"[check_data_timeout] 数据超时，触发timeout事件")
+                self.state_machine.handle_event('timeout')
+                # 重置last_data_time，避免重复检测超时
+                self.last_data_time = None
     
     def show_channel_context_menu(self, position):
         """显示通道右键菜单
@@ -844,6 +1304,21 @@ class MainWindow(QMainWindow):
             action = QAction(channel_name, self)
             action.triggered.connect(lambda checked, name=channel_name: self.set_channel_color(name))
             color_menu.addAction(action)
+        
+        # 检查是否是Justfloat协议
+        is_justfloat = False
+        current_source = self.data_source_manager.get_current_source()
+        if hasattr(current_source, 'get_protocol'):
+            protocol = current_source.get_protocol()
+            is_justfloat = (protocol == 'justfloat')
+        
+        # 只有Justfloat协议才显示重命名通道菜单
+        if is_justfloat:
+            rename_menu = menu.addMenu("重命名通道")
+            for channel_name in channels:
+                action = QAction(channel_name, self)
+                action.triggered.connect(lambda checked, name=channel_name: self.rename_channel(name))
+                rename_menu.addAction(action)
         
         # 显示菜单
         menu.exec_(self.channels_label.mapToGlobal(position))
@@ -882,6 +1357,46 @@ class MainWindow(QMainWindow):
             print(f"通道 '{channel_name}' 颜色已更新为: {color.name()} ({rgb})")
         else:
             print(f"通道 '{channel_name}' 颜色设置已取消")
+    
+    def rename_channel(self, old_name: str):
+        """重命名通道
+        
+        Args:
+            old_name: 原通道名称
+        """
+        if old_name not in self.waveform_widget.channels:
+            QMessageBox.warning(self, "错误", f"通道 '{old_name}' 不存在")
+            return
+        
+        # 弹出输入对话框
+        new_name, ok = QInputDialog.getText(self, "重命名通道", f"请输入通道 '{old_name}' 的新名称:")
+        
+        if ok and new_name:
+            # 检查新名称是否已存在
+            if new_name in self.waveform_widget.channels:
+                QMessageBox.warning(self, "错误", f"通道 '{new_name}' 已存在")
+                return
+            
+            # 检查新名称是否为空
+            if not new_name.strip():
+                QMessageBox.warning(self, "错误", "通道名称不能为空")
+                return
+            
+            # 更新waveform_widget中的通道名
+            self.waveform_widget.rename_channel(old_name, new_name)
+            
+            # 更新data_source_manager中的通道列表
+            if old_name in self.data_source_manager.channels:
+                index = self.data_source_manager.channels.index(old_name)
+                self.data_source_manager.channels[index] = new_name
+            
+            # 更新通道显示
+            channels_text = ", ".join(self.data_source_manager.get_channels())
+            self.channels_label.setText(f"检测到通道: {channels_text}")
+            
+            print(f"通道 '{old_name}' 已重命名为 '{new_name}'")
+        else:
+            print(f"通道 '{old_name}' 重命名已取消")
     
 
     def closeEvent(self, event):
