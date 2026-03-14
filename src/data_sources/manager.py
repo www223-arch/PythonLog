@@ -29,6 +29,7 @@ class DataSourceManager:
         self.header_enabled = True  # 是否启用数据校验头验证
         self.header_mismatch_count = 0  # 校验头不匹配计数器
         self.last_valid_data_time = None  # 最后一次有效数据的时间
+        self.channel_name_mapping = {}  # 通道名映射字典 {原始名: 新名}
 
  
     
@@ -53,6 +54,7 @@ class DataSourceManager:
                 self.channels.clear()
                 self.channel_data.clear()
                 self.timestamps.clear()
+                self.channel_name_mapping.clear()  # 清空通道名映射
                 print(f"数据源已切换到: {source}")
             
             return success
@@ -121,24 +123,35 @@ class DataSourceManager:
                 # 使用提取到的通道名称
                 for i, value in enumerate(data[2:]):
                     if i < len(channel_names):
-                        channel_name = channel_names[i]
+                        original_channel_name = channel_names[i]
                     else:
-                        channel_name = f'channel{i+1}'
-                    data_dict[channel_name] = float(value)
+                        original_channel_name = f'channel{i+1}'
+                    # 应用通道名映射
+                    display_channel_name = self.get_display_channel_name(original_channel_name)
+                    data_dict[display_channel_name] = float(value)
                     
-                    # 自动添加新通道
-                    if channel_name not in self.channels:
-                        self.channels.append(channel_name)
-                        print(f"检测到新通道: {channel_name}")
+                    # 自动添加新通道（使用映射后的名称）
+                    # 检查：映射后的通道名是否已存在，或者原始通道名是否已存在
+                    if display_channel_name not in self.channels and original_channel_name not in self.channels:
+                        self.channels.append(display_channel_name)
+                        print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
+                    else:
+                        print(f"[read_data] 通道已存在，跳过: {display_channel_name} (原始名: {original_channel_name}), 当前channels: {self.channels}")
             else:
-                # 如果没有get_channel_names方法，使用默认通道名称
+                # 如果没有get_channel_names方法，使用默认通道名称（Justfloat模式）
                 for i, value in enumerate(data[2:], 1):
-                    channel_name = f'channel{i}'
-                    data_dict[channel_name] = float(value)
+                    original_channel_name = f'channel{i}'
+                    # 应用通道名映射
+                    display_channel_name = self.get_display_channel_name(original_channel_name)
+                    data_dict[display_channel_name] = float(value)
                     
-                    if channel_name not in self.channels:
-                        self.channels.append(channel_name)
-                        print(f"检测到新通道: {channel_name}")
+                    # 自动添加新通道（使用映射后的名称）
+                    # 检查：映射后的通道名是否已存在，或者原始通道名是否已存在
+                    if display_channel_name not in self.channels and original_channel_name not in self.channels:
+                        self.channels.append(display_channel_name)
+                        print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
+                    else:
+                        print(f"[read_data] 通道已存在，跳过: {display_channel_name} (原始名: {original_channel_name}), 当前channels: {self.channels}")
             
             # 保存到缓冲区
             self.data_buffer.append(data_dict)
@@ -172,7 +185,6 @@ class DataSourceManager:
         if self.current_source:
             self.current_source.disconnect()
             self.current_source = None
-
         
         # 停止数据保存
         if self.data_saver.is_active():
@@ -182,6 +194,8 @@ class DataSourceManager:
         self.channels.clear()
         self.channel_data.clear()
         self.timestamps.clear()
+        # 清空通道名映射
+        self.channel_name_mapping.clear()
     
     def is_connected(self) -> bool:
         """检查是否已连接数据源
@@ -290,6 +304,40 @@ class DataSourceManager:
     def reset_header_mismatch_count(self) -> None:
         """重置校验头不匹配计数器"""
         self.header_mismatch_count = 0
+    
+    def set_channel_name_mapping(self, old_name: str, new_name: str) -> None:
+        """设置通道名映射
+        
+        Args:
+            old_name: 原始通道名
+            new_name: 新通道名
+        """
+        self.channel_name_mapping[old_name] = new_name
+        print(f"通道名映射已设置: {old_name} -> {new_name}")
+    
+    def get_channel_name_mapping(self) -> dict:
+        """获取通道名映射字典
+        
+        Returns:
+            通道名映射字典
+        """
+        return self.channel_name_mapping.copy()
+    
+    def clear_channel_name_mapping(self) -> None:
+        """清空通道名映射"""
+        self.channel_name_mapping.clear()
+        print("通道名映射已清空")
+    
+    def get_display_channel_name(self, original_name: str) -> str:
+        """获取显示用的通道名
+        
+        Args:
+            original_name: 原始通道名
+        
+        Returns:
+            显示用的通道名（如果有映射则返回新名，否则返回原名）
+        """
+        return self.channel_name_mapping.get(original_name, original_name)
 
 
 # 便捷函数：创建UDP数据源并连接
@@ -306,7 +354,7 @@ def create_udp_source(host: str = '0.0.0.0', port: int = 8888) -> UDPDataSource:
     return UDPDataSource(host, port)
 
 
-def create_serial_source(port: str = 'COM1', baudrate: int = 115200, protocol: str = 'text', data_header: str = 'DATA'):
+def create_serial_source(port: str = 'COM1', baudrate: int = 115200, protocol: str = 'text', data_header: str = 'DATA', justfloat_mode: str = 'without_timestamp', delta_t: float = 1.0):
     """创建串口数据源
     
     Args:
@@ -314,9 +362,11 @@ def create_serial_source(port: str = 'COM1', baudrate: int = 115200, protocol: s
         baudrate: 波特率
         protocol: 协议类型，'text'为文本协议，'binary'为二进制协议
         data_header: 数据校验头，用于文本协议
+        justfloat_mode: Justfloat模式，'without_timestamp'为无时间戳，'with_timestamp'为带时间戳
+        delta_t: 数据点间隔（毫秒），仅用于无时间戳模式
     
     Returns:
         串口数据源对象
     """
     from .serial_source import SerialDataSource
-    return SerialDataSource(port, baudrate, protocol, data_header)
+    return SerialDataSource(port, baudrate, protocol, data_header, justfloat_mode, delta_t)

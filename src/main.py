@@ -594,14 +594,34 @@ class MainWindow(QMainWindow):
         serial_layout.addRow("波特率:", self.baudrate_combo)
         serial_layout.addRow("通信协议:", self.protocol_combo)
         
-        # 隐藏串口配置组
-        self.serial_group.setVisible(False)
-        
         self.serial_group.setLayout(serial_layout)
         layout.addWidget(self.serial_group)
         
         # 数据校验头配置（公用的）
-        self.header_group = QGroupBox("数据校验头配置")
+        
+        # Justfloat配置组（默认隐藏）
+        self.justfloat_group = QGroupBox("")
+        justfloat_layout = QFormLayout()
+        
+        self.justfloat_mode_combo = QComboBox()
+        self.justfloat_mode_combo.addItems(["无时间戳", "带时间戳"])
+        self.justfloat_mode_combo.setCurrentText("无时间戳")
+        self.justfloat_mode_combo.currentTextChanged.connect(self.on_justfloat_mode_changed)
+        justfloat_layout.addRow("Justfloat模式:", self.justfloat_mode_combo)
+        
+        self.delta_t_edit = QLineEdit("1")
+        self.delta_t_edit.setPlaceholderText("数据点间隔(ms)")
+        justfloat_layout.addRow("Δt(ms):", self.delta_t_edit)
+        
+        self.justfloat_group.setLayout(justfloat_layout)
+        self.justfloat_group.setVisible(False)
+        layout.addWidget(self.justfloat_group)
+        
+        # 隐藏串口配置组
+        self.serial_group.setVisible(False)
+        
+        # 数据校验头配置（公用的）
+        self.header_group = QGroupBox("")
         header_layout = QFormLayout()
         
         self.header_edit = QLineEdit("DATA")
@@ -826,6 +846,10 @@ class MainWindow(QMainWindow):
         # 设置空格键快捷键为暂停/继续
         self.space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
         self.space_shortcut.activated.connect(self.toggle_pause)
+        
+        # 设置初始UI状态
+        self.on_source_type_changed(self.source_type_combo.currentText())
+        self.on_protocol_changed(self.protocol_combo.currentText())
     
     def toggle_connection(self):
         """切换连接/断开状态"""
@@ -888,10 +912,18 @@ class MainWindow(QMainWindow):
                     elif protocol_text == 'Justfloat':
                         protocol = 'justfloat'
                         serial_header = ''  # Justfloat不使用数据校验头
+                        # 获取Justfloat模式和Δt
+                        justfloat_mode_text = self.justfloat_mode_combo.currentText()
+                        justfloat_mode = 'with_timestamp' if justfloat_mode_text == '带时间戳' else 'without_timestamp'
+                        delta_t = float(self.delta_t_edit.text()) if self.delta_t_edit.text() else 1.0
                     else:  # Rawdata
                         protocol = 'rawdata'
                         serial_header = ''  # Rawdata不使用数据校验头
-                    data_source = create_serial_source(serial_port, baudrate, protocol, serial_header)
+                    
+                    if protocol_text == 'Justfloat':
+                        data_source = create_serial_source(serial_port, baudrate, protocol, serial_header, justfloat_mode, delta_t)
+                    else:
+                        data_source = create_serial_source(serial_port, baudrate, protocol, serial_header)
                     # 设置原始数据回调函数
                     data_source.set_raw_data_callback(self.on_raw_data_received)
                     # 设置断开回调函数
@@ -998,11 +1030,35 @@ class MainWindow(QMainWindow):
             protocol_text: 协议文本（文本协议、Justfloat、Rawdata）
         """
         if protocol_text == "文本协议":
-            # 文本协议：启用数据校验头配置
-            self.header_group.setEnabled(True)
-        else:
-            # Justfloat和Rawdata：禁用数据校验头配置
-            self.header_group.setEnabled(False)
+            # 文本协议：显示数据校验头配置
+            self.header_group.setVisible(True)
+            # 隐藏Justfloat配置组
+            self.justfloat_group.setVisible(False)
+        elif protocol_text == "Justfloat":
+            # Justfloat：隐藏数据校验头配置
+            self.header_group.setVisible(False)
+            # 显示Justfloat配置组
+            self.justfloat_group.setVisible(True)
+            # 根据Justfloat模式显示/隐藏Δt设置
+            self.on_justfloat_mode_changed(self.justfloat_mode_combo.currentText())
+        else:  # Rawdata
+            # Rawdata：隐藏数据校验头配置
+            self.header_group.setVisible(False)
+            # 隐藏Justfloat配置组
+            self.justfloat_group.setVisible(False)
+    
+    def on_justfloat_mode_changed(self, mode_text: str):
+        """Justfloat模式改变事件处理
+        
+        Args:
+            mode_text: 模式文本（无时间戳、带时间戳）
+        """
+        if mode_text == "无时间戳":
+            # 无时间戳模式：显示Δt设置
+            self.delta_t_edit.setVisible(True)
+        else:  # 带时间戳
+            # 带时间戳模式：隐藏Δt设置
+            self.delta_t_edit.setVisible(False)
     
     def browse_save_path(self):
         """浏览保存路径"""
@@ -1290,6 +1346,8 @@ class MainWindow(QMainWindow):
         """
         channels = self.waveform_widget.get_all_channels()
         
+        print(f"[show_channel_context_menu] 当前通道: {channels}")
+        
         if not channels:
             return
         
@@ -1311,14 +1369,20 @@ class MainWindow(QMainWindow):
         if hasattr(current_source, 'get_protocol'):
             protocol = current_source.get_protocol()
             is_justfloat = (protocol == 'justfloat')
+            print(f"[show_channel_context_menu] 当前协议: {protocol}, is_justfloat: {is_justfloat}")
+        else:
+            print(f"[show_channel_context_menu] 当前数据源不支持get_protocol方法")
         
         # 只有Justfloat协议才显示重命名通道菜单
         if is_justfloat:
+            print(f"[show_channel_context_menu] 显示重命名通道菜单")
             rename_menu = menu.addMenu("重命名通道")
             for channel_name in channels:
                 action = QAction(channel_name, self)
                 action.triggered.connect(lambda checked, name=channel_name: self.rename_channel(name))
                 rename_menu.addAction(action)
+        else:
+            print(f"[show_channel_context_menu] 不显示重命名通道菜单（非Justfloat协议）")
         
         # 显示菜单
         menu.exec_(self.channels_label.mapToGlobal(position))
@@ -1364,6 +1428,11 @@ class MainWindow(QMainWindow):
         Args:
             old_name: 原通道名称
         """
+        print(f"[rename_channel] 开始重命名通道: {old_name}")
+        print(f"[rename_channel] waveform_widget.channels: {list(self.waveform_widget.channels.keys())}")
+        print(f"[rename_channel] data_source_manager.channels: {self.data_source_manager.channels}")
+        print(f"[rename_channel] data_source_manager.channel_name_mapping: {self.data_source_manager.get_channel_name_mapping()}")
+        
         if old_name not in self.waveform_widget.channels:
             QMessageBox.warning(self, "错误", f"通道 '{old_name}' 不存在")
             return
@@ -1372,31 +1441,38 @@ class MainWindow(QMainWindow):
         new_name, ok = QInputDialog.getText(self, "重命名通道", f"请输入通道 '{old_name}' 的新名称:")
         
         if ok and new_name:
-            # 检查新名称是否已存在
-            if new_name in self.waveform_widget.channels:
-                QMessageBox.warning(self, "错误", f"通道 '{new_name}' 已存在")
-                return
-            
             # 检查新名称是否为空
             if not new_name.strip():
                 QMessageBox.warning(self, "错误", "通道名称不能为空")
                 return
             
+            print(f"[rename_channel] 用户输入新名称: {new_name}")
+            
             # 更新waveform_widget中的通道名
             self.waveform_widget.rename_channel(old_name, new_name)
+            print(f"[rename_channel] waveform_widget.rename_channel 完成")
             
-            # 更新data_source_manager中的通道列表
+            # 更新data_source_manager中的通道名映射
+            self.data_source_manager.set_channel_name_mapping(old_name, new_name)
+            print(f"[rename_channel] data_source_manager.set_channel_name_mapping 完成")
+            
+            # 更新data_source_manager中的通道列表（移除旧名称，添加新名称）
             if old_name in self.data_source_manager.channels:
-                index = self.data_source_manager.channels.index(old_name)
-                self.data_source_manager.channels[index] = new_name
+                self.data_source_manager.channels.remove(old_name)
+                self.data_source_manager.channels.append(new_name)
+                print(f"[rename_channel] data_source_manager.channels 更新后: {self.data_source_manager.channels}")
             
             # 更新通道显示
             channels_text = ", ".join(self.data_source_manager.get_channels())
             self.channels_label.setText(f"检测到通道: {channels_text}")
             
-            print(f"通道 '{old_name}' 已重命名为 '{new_name}'")
+            print(f"[rename_channel] 通道 '{old_name}' 已重命名为 '{new_name}'")
+            print(f"[rename_channel] 最终状态:")
+            print(f"[rename_channel]   waveform_widget.channels: {list(self.waveform_widget.channels.keys())}")
+            print(f"[rename_channel]   data_source_manager.channels: {self.data_source_manager.channels}")
+            print(f"[rename_channel]   data_source_manager.channel_name_mapping: {self.data_source_manager.get_channel_name_mapping()}")
         else:
-            print(f"通道 '{old_name}' 重命名已取消")
+            print(f"[rename_channel] 通道 '{old_name}' 重命名已取消")
     
 
     def closeEvent(self, event):

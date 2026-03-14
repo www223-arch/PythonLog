@@ -646,19 +646,40 @@ class WaveformWidget(QWidget):
         if old_name not in self.channels:
             print(f"通道 '{old_name}' 不存在")
             return
-        
+
         if new_name in self.channels:
             print(f"通道 '{new_name}' 已存在")
             return
+
+        if not new_name.strip():
+            print("新通道名不能为空")
+            return
         
         # 更新channels字典
-        self.channels[new_name] = self.channels[old_name]
+        channel_info = self.channels[old_name]
+        self.channels[new_name] = channel_info
         del self.channels[old_name]
-        
-        # 更新channel_data字典
-        if old_name in self.channel_data:
-            self.channel_data[new_name] = self.channel_data[old_name]
-            del self.channel_data[old_name]
+
+        # 更新曲线名称
+        curve = self.channels[new_name]['curve']
+        # 方法1：直接设置name属性
+        curve.opts['name'] = new_name
+        # 方法2：重新设置数据以更新图例
+        if curve.xData is not None and curve.yData is not None:
+            curve.setData(curve.xData, curve.yData, name=new_name)
+        else:
+            curve.setData(name=new_name)
+
+        # 更新通道选择下拉框
+        combo_index = self.channel_combo.findText(old_name)
+        if combo_index >= 0:
+            self.channel_combo.setItemText(combo_index, new_name)
+
+        # 更新已标记点中的通道名称
+        self.marked_points = [
+            (new_name if ch == old_name else ch, x, y)
+            for ch, x, y in self.marked_points
+        ]
         
         # 更新freq_curves字典（如果存在）
         if old_name in self.freq_curves:
