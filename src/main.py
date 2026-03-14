@@ -956,7 +956,7 @@ class MainWindow(QMainWindow):
         
         # 数据限制开关
         self.limit_data_checkbox = QCheckBox("限制数据点数")
-        self.limit_data_checkbox.setChecked(True)
+        self.limit_data_checkbox.setChecked(False)
         self.limit_data_checkbox.toggled.connect(self.toggle_limit_data)
         channel_layout.addWidget(self.limit_data_checkbox)
         
@@ -1272,6 +1272,8 @@ class MainWindow(QMainWindow):
         self.on_source_type_changed(self.source_type_combo.currentText())
         self.on_protocol_changed(self.protocol_combo.currentText())
         self.on_file_protocol_changed(self.file_protocol_combo.currentText())
+
+        self.waveform_widget.set_limit_data(self.limit_data_checkbox.isChecked())
 
     def _on_encoding_changed(self, text: str):
         """编码格式改变时更新缓存"""
