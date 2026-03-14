@@ -44,6 +44,13 @@ class SerialDataSource(DataSource):
         self.data_point_counter = 0  # 数据点计数器（用于无时间戳模式）
         self.start_time = None  # 起始时间（用于无时间戳模式）
     
+    def reset_data_point_counter(self) -> None:
+        """重置数据点计数器（用于改变Δt后）
+        """
+        self.data_point_counter = 0
+        self.start_time = None
+        print(f"[reset_data_point_counter] 数据点计数器已重置")
+    
     def connect(self) -> bool:
         """连接串口数据源
         
@@ -258,10 +265,10 @@ class SerialDataSource(DataSource):
                 timestamp = timestamp_ms / 1000.0  # 转换为秒
                 values = values[:-1]  # 去掉时间戳
             else:
-                # 无时间戳模式：使用Δt计算时间戳
-                if self.start_time is None:
-                    self.start_time = time.time()
-                timestamp = self.start_time + (self.data_point_counter * self.delta_t / 1000.0)
+                # 无时间戳模式：使用Δt计算时间戳（单位：ms）
+                # 第一个点从0ms开始，第二个点Δt ms，第三个点2*Δt ms，...
+                timestamp_ms = self.data_point_counter * self.delta_t
+                timestamp = timestamp_ms / 1000.0  # 转换为秒
                 self.data_point_counter += 1
             
             result = (header, timestamp) + values

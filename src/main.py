@@ -611,6 +611,7 @@ class MainWindow(QMainWindow):
         
         self.delta_t_edit = QLineEdit("1")
         self.delta_t_edit.setPlaceholderText("数据点间隔(ms)")
+        self.delta_t_edit.textChanged.connect(self.on_delta_t_changed)
         justfloat_layout.addRow("Δt(ms):", self.delta_t_edit)
         
         self.justfloat_group.setLayout(justfloat_layout)
@@ -800,6 +801,9 @@ class MainWindow(QMainWindow):
         self.last_data_time = None  # 记录最后接收数据的时间
         self.data_timeout = 1000  # 数据超时时间（毫秒）
         
+        # 将data_source_manager传递给waveform_widget
+        self.waveform_widget.data_source_manager = self.data_source_manager
+        
         # 初始化状态机
         self.state_machine = StateMachine(self)
         
@@ -930,6 +934,10 @@ class MainWindow(QMainWindow):
                     data_source.set_disconnect_callback(self.disconnect_callback)
                     success = self.data_source_manager.set_source(data_source)
                     
+                    # 如果是Justfloat无时间戳模式，重置数据点计数器
+                    if protocol_text == 'Justfloat' and justfloat_mode == 'without_timestamp':
+                        data_source.reset_data_point_counter()
+                    
                     if success:
                         if protocol == 'text':
                             print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {serial_header}")
@@ -1059,6 +1067,31 @@ class MainWindow(QMainWindow):
         else:  # 带时间戳
             # 带时间戳模式：隐藏Δt设置
             self.delta_t_edit.setVisible(False)
+    
+    def on_delta_t_changed(self, delta_t_text: str):
+        """Δt改变事件处理
+        
+        Args:
+            delta_t_text: Δt文本
+        """
+        try:
+            # 尝试解析Δt
+            delta_t = float(delta_t_text) if delta_t_text else 1.0
+            print(f"[on_delta_t_changed] Δt已改变为: {delta_t} ms")
+            
+            # 如果当前已连接且是Justfloat无时间戳模式，重置数据点计数器
+            if self.data_source_manager.is_connected():
+                current_source = self.data_source_manager.current_source
+                if hasattr(current_source, 'get_protocol'):
+                    protocol = current_source.get_protocol()
+                    if protocol == 'justfloat' and hasattr(current_source, 'justfloat_mode'):
+                        if current_source.justfloat_mode == 'without_timestamp':
+                            # 更新Δt并重置计数器
+                            current_source.delta_t = delta_t
+                            current_source.reset_data_point_counter()
+                            print(f"[on_delta_t_changed] 已重置数据点计数器")
+        except ValueError:
+            print(f"[on_delta_t_changed] 无效的Δt值: {delta_t_text}")
     
     def browse_save_path(self):
         """浏览保存路径"""

@@ -77,17 +77,21 @@ class DataSourceManager:
         if data is not None and len(data) > 0:
             # 解析数据：第一个元素是数据校验头，第二个是时间戳，后面是通道数据
             header = str(data[0])
-            timestamp = float(data[1])
+            timestamp_seconds = float(data[1])
+            # 将时间戳转换为ms（统一单位）
+            timestamp_ms = timestamp_seconds * 1000.0
             
             # 更新最后接收数据的时间（包括校验头不匹配的数据）
-            self.last_data_time = timestamp
+            self.last_data_time = timestamp_ms
+            # 更新最后有效数据的时间（用于计算采样率）
+            self.last_valid_data_time = timestamp_ms
             
             # 检查是否是Rawdata模式
             if hasattr(self.current_source, 'get_protocol'):
                 protocol = self.current_source.get_protocol()
                 if protocol == 'rawdata':
                     # Rawdata模式，直接返回数据，不进行任何校验
-                    data_dict = {'header': header, 'timestamp': timestamp}
+                    data_dict = {'header': header, 'timestamp': timestamp_ms}
                     return data_dict
             
             # 检查是否是数据格式错误标识（先检查这个）
@@ -95,12 +99,12 @@ class DataSourceManager:
                 self.header_mismatch_count += 1
                 print(f"[警告] 数据格式不匹配 - 丢弃数据")
                 # 返回特殊标识，表示有格式错误
-                return {'format_error': True, 'header': header, 'timestamp': timestamp}
+                return {'format_error': True, 'header': header, 'timestamp': timestamp_ms}
             
             # 检查是否有通道数据（Rawdata模式可能没有）
             if len(data) < 3:
                 # 没有通道数据，返回空数据字典以更新状态
-                data_dict = {'header': header, 'timestamp': timestamp}
+                data_dict = {'header': header, 'timestamp': timestamp_ms}
                 return data_dict
             
             # 验证数据校验头（只在数据校验头不为空时才验证）
@@ -111,10 +115,10 @@ class DataSourceManager:
             
             # 重置校验头不匹配计数器
             self.header_mismatch_count = 0
-            self.last_valid_data_time = timestamp
+            self.last_valid_data_time = timestamp_ms
             
             # 构建数据字典
-            data_dict = {'header': header, 'timestamp': timestamp}
+            data_dict = {'header': header, 'timestamp': timestamp_ms}
             
             # 从UDP数据源获取通道名称
             if hasattr(self.current_source, 'get_channel_names'):
@@ -304,6 +308,41 @@ class DataSourceManager:
     def reset_header_mismatch_count(self) -> None:
         """重置校验头不匹配计数器"""
         self.header_mismatch_count = 0
+    
+    def get_delta_t(self) -> Optional[float]:
+        """获取当前数据源的Δt值（仅用于Justfloat无时间戳模式）
+        
+        Returns:
+            Δt值（ms），如果不是Justfloat无时间戳模式，返回None
+        """
+        print(f"[get_delta_t] 开始检查...")
+        print(f"[get_delta_t] current_source: {self.current_source}")
+        
+        if self.current_source:
+            print(f"[get_delta_t] current_source.protocol: {self.current_source.protocol}")
+            print(f"[get_delta_t] hasattr(current_source, 'protocol'): {hasattr(self.current_source, 'protocol')}")
+            print(f"[get_delta_t] hasattr(current_source, 'justfloat_mode'): {hasattr(self.current_source, 'justfloat_mode')}")
+            
+            if hasattr(self.current_source, 'protocol'):
+                if self.current_source.protocol == 'justfloat':
+                    print(f"[get_delta_t] protocol == 'justfloat'，检查justfloat_mode...")
+                    if hasattr(self.current_source, 'justfloat_mode'):
+                        print(f"[get_delta_t] justfloat_mode: {self.current_source.justfloat_mode}")
+                        if self.current_source.justfloat_mode == 'without_timestamp':
+                            print(f"[get_delta_t] justfloat_mode == 'without_timestamp'，返回delta_t: {self.current_source.delta_t}")
+                            return self.current_source.delta_t
+                        else:
+                            print(f"[get_delta_t] justfloat_mode不是'without_timestamp'，返回None")
+                    else:
+                        print(f"[get_delta_t] 没有justfloat_mode属性，返回None")
+                else:
+                    print(f"[get_delta_t] protocol不是'justfloat'，返回None")
+            else:
+                print(f"[get_delta_t] 没有protocol属性，返回None")
+        else:
+            print(f"[get_delta_t] current_source为None，返回None")
+        
+        return None
     
     def set_channel_name_mapping(self, old_name: str, new_name: str) -> None:
         """设置通道名映射

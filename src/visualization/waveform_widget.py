@@ -53,6 +53,9 @@ class WaveformWidget(QWidget):
         self.freq_curves = {}  # 存储频域曲线 {channel_name: curve_item}
         self.freq_user_markers = []  # 存储用户双击设置的标记点 [(scatter, text), ...]
         
+        # 数据源管理器引用
+        self.data_source_manager = None
+        
         # 更新定时器
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_display)
@@ -729,16 +732,50 @@ class WaveformWidget(QWidget):
         
         channel = self.channels[channel_name]
         data = channel['data']
+        x_data = channel['x_data']
         
         if len(data) < 10:
             self.freq_info_label.setText(f"数据点太少（{len(data)}个），无法进行频域分析")
             return
         
         try:
+            # 使用理论采样率（1000 / Δt）
+            print(f"[perform_fft_analysis] 开始频域分析...")
+            print(f"[perform_fft_analysis] data_source_manager: {self.data_source_manager}")
+            
+            delta_t = None
+            if hasattr(self, 'data_source_manager') and self.data_source_manager:
+                delta_t = self.data_source_manager.get_delta_t()
+                print(f"[perform_fft_analysis] get_delta_t() 返回: {delta_t}")
+            else:
+                print(f"[perform_fft_analysis] data_source_manager 为 None 或不存在!")
+            
+            if delta_t is not None:
+                # Justfloat无时间戳模式：使用理论采样率
+                actual_sample_rate = 1000.0 / delta_t
+                print(f"[perform_fft_analysis] 使用理论采样率: {actual_sample_rate:.2f} Hz (Δt: {delta_t:.2f} ms)")
+            else:
+                # 其他模式：根据时间戳计算实际的采样率
+                print(f"[perform_fft_analysis] delta_t 为 None，使用时间戳计算采样率")
+                if len(x_data) >= 2:
+                    # 计算时间间隔的平均值（单位：ms）
+                    time_intervals = []
+                    for i in range(1, len(x_data)):
+                        interval = x_data[i] - x_data[i-1]
+                        time_intervals.append(interval)
+                    avg_interval = sum(time_intervals) / len(time_intervals)
+                    # 采样率 = 1000 / 平均间隔（ms）
+                    actual_sample_rate = 1000.0 / avg_interval if avg_interval > 0 else 1.0
+                    print(f"[perform_fft_analysis] 计算采样率: {actual_sample_rate:.2f} Hz (平均间隔: {avg_interval:.2f} ms)")
+                else:
+                    # 使用默认采样率
+                    actual_sample_rate = self.sample_rate
+                    print(f"[perform_fft_analysis] 使用默认采样率: {actual_sample_rate:.2f} Hz")
+            
             # 执行FFT
             n = len(data)
             fft_result = fft(data)
-            fft_freq = fftfreq(n, d=1.0/self.sample_rate)
+            fft_freq = fftfreq(n, d=1.0/actual_sample_rate)
             
             # 只取正频率部分
             positive_freq_idx = fft_freq >= 0
@@ -782,7 +819,7 @@ class WaveformWidget(QWidget):
             
             # 更新频域信息
             peak_info = " | ".join([f"{f:.2f}Hz({m:.4f})" for f, m in peaks[:5]])
-            info_text = (f"通道: {channel_name} | 数据点数: {n} | 采样率: {self.sample_rate:.1f} Hz\n"
+            info_text = (f"通道: {channel_name} | 数据点数: {n} | 采样率: {actual_sample_rate:.1f} Hz\n"
                         f"主频: {main_freq:.2f} Hz | 幅值: {main_magnitude:.4f}\n"
                         f"频率范围: 0 ~ {freq[-1]:.2f} Hz\n"
                         f"峰值: {peak_info}")
