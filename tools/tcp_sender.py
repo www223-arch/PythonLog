@@ -15,11 +15,16 @@ import time
 class TCPSender:
     """TCP数据发送器（客户端模式）"""
 
-    def __init__(self, host: str = '127.0.0.1', port: int = 9999):
+    def __init__(self, host: str = '127.0.0.1', port: int = 9999, dump_log_path: str = ''):
         self.host = host
         self.port = port
         self.socket = None
         self.is_running = False
+        self.dump_log_path = dump_log_path
+        self._dump_fp = None
+
+        if self.dump_log_path:
+            self._dump_fp = open(self.dump_log_path, 'a', encoding='utf-8')
 
     def connect(self) -> None:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -32,6 +37,9 @@ class TCPSender:
             except Exception:
                 pass
             self.socket = None
+        if self._dump_fp:
+            self._dump_fp.close()
+            self._dump_fp = None
 
     def send_data(self, timestamp: float, channel_data: dict, header: str = 'DATA') -> None:
         if self.socket is None:
@@ -43,6 +51,10 @@ class TCPSender:
 
         payload = (','.join(parts) + '\n').encode('utf-8')
         self.socket.sendall(payload)
+
+        if self._dump_fp:
+            self._dump_fp.write(payload.decode('utf-8'))
+            self._dump_fp.flush()
 
     def send_sine_wave(
         self,
@@ -148,9 +160,10 @@ def main() -> None:
     parser.add_argument('--rate', type=int, default=50, help='采样率 (默认: 50Hz)')
     parser.add_argument('--names', type=str, nargs='+', default=None, help='自定义通道名称')
     parser.add_argument('--header', type=str, default='DATA', help='数据校验头 (默认: DATA)')
+    parser.add_argument('--dump-log', type=str, default='', help='可选：同步追加写入日志文件（用于文件源实时联调）')
 
     args = parser.parse_args()
-    sender = TCPSender(args.host, args.port)
+    sender = TCPSender(args.host, args.port, args.dump_log)
 
     try:
         sender.connect()

@@ -232,10 +232,10 @@ class ManagerLayeringRegressionTests(unittest.TestCase):
             self.assertIsNotNone(frame2)
             self.assertEqual(frame2['channels']['a'], 3.5)
 
-            # 到达EOF后应自动结束连接，避免空转
+            # 到达EOF后保持连接，等待文件追加数据
             while manager.read_frame() is not None:
                 pass
-            self.assertFalse(src.is_connected)
+            self.assertTrue(src.is_connected)
 
     def test_file_justfloat_without_timestamp_replay(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -265,7 +265,39 @@ class ManagerLayeringRegressionTests(unittest.TestCase):
 
             while manager.read_frame() is not None:
                 pass
-            self.assertFalse(src.is_connected)
+            self.assertTrue(src.is_connected)
+
+    def test_file_text_source_can_tail_new_appended_lines(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_path = os.path.join(tmp_dir, 'tail.log')
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('DATA,0.0,a=1.0\n')
+
+            manager = DataSourceManager()
+            src = create_file_source(file_path, protocol='text', data_header='DATA')
+            self.assertTrue(manager.set_source(src))
+
+            frame1 = manager.read_frame()
+            self.assertIsNotNone(frame1)
+            self.assertEqual(frame1['channels']['a'], 1.0)
+
+            # 到达EOF时无数据返回None，但保持连接
+            self.assertIsNone(manager.read_frame())
+            self.assertTrue(src.is_connected)
+
+            # 追加新行后应可继续读取
+            with open(file_path, 'a', encoding='utf-8') as f:
+                f.write('DATA,0.02,a=2.5\n')
+                f.flush()
+
+            frame2 = None
+            for _ in range(10):
+                frame2 = manager.read_frame()
+                if frame2 is not None:
+                    break
+
+            self.assertIsNotNone(frame2)
+            self.assertEqual(frame2['channels']['a'], 2.5)
 
 
 if __name__ == '__main__':
