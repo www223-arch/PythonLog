@@ -99,6 +99,9 @@ class SerialDataSource(DataSource):
             print(f"读取串口数据失败: {e}")
             # 串口断开，更新连接状态
             self.is_connected = False
+            # 调用断开回调
+            if self.disconnect_callback:
+                self.disconnect_callback()
             return None
     
     def _parse_data(self, data: bytes) -> Tuple[float, ...]:

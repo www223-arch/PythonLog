@@ -18,6 +18,7 @@ class DataSource(ABC):
     def __init__(self):
         self.is_connected = False
         self.config = {}
+        self.disconnect_callback = None  # 断开回调函数
     
     @abstractmethod
     def connect(self) -> bool:
@@ -40,6 +41,9 @@ class DataSource(ABC):
     @abstractmethod
     def disconnect(self) -> None:
         """断开数据源连接"""
+        # 调用断开回调
+        if self.disconnect_callback:
+            self.disconnect_callback()
         pass
     
     def configure(self, **kwargs) -> None:
@@ -49,6 +53,14 @@ class DataSource(ABC):
             **kwargs: 配置参数
         """
         self.config.update(kwargs)
+    
+    def set_disconnect_callback(self, callback) -> None:
+        """设置断开回调函数
+        
+        Args:
+            callback: 回调函数
+        """
+        self.disconnect_callback = callback
     
     def get_config(self) -> dict:
         """获取当前配置
