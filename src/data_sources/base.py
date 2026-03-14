@@ -40,10 +40,11 @@ class DataSource(ABC):
     
     @abstractmethod
     def disconnect(self) -> None:
-        """断开数据源连接"""
-        # 调用断开回调
-        if self.disconnect_callback:
-            self.disconnect_callback()
+        """断开数据源连接
+        
+        注意：不要在这里调用disconnect_callback，因为它可能在子线程中执行
+        回调函数应该由主线程调用
+        """
         pass
     
     def configure(self, **kwargs) -> None:
