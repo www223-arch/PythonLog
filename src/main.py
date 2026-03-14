@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient, QKeySequence
 
-from data_sources.manager import DataSourceManager, create_udp_source
+from data_sources.manager import DataSourceManager, create_udp_source, create_serial_source
 from visualization.waveform_widget import WaveformWidget
 from enum import Enum
 
@@ -68,12 +68,12 @@ class DataReceiveThread(QThread):
                     self.disconnect_signal.emit()
                     break
 
-                # 读取数据（返回字典格式）
-                data_dict = data_source_manager.read_data()
+                # 读取统一帧数据（canonical API）
+                frame = data_source_manager.read_frame()
                 
-                if data_dict is not None:
+                if frame is not None:
                     # 将数据放入队列
-                    data_queue.put(data_dict, block=False)
+                    data_queue.put(frame, block=False)
                     self.recv_ok_count += 1
                 else:
                     # 无数据时短暂休眠，降低CPU占用并减少对UI线程抢占
@@ -86,7 +86,7 @@ class DataReceiveThread(QThread):
                 except queue.Empty:
                     pass
                 try:
-                    data_queue.put_nowait(data_dict)
+                    data_queue.put_nowait(frame)
                 except queue.Full:
                     pass
             except AttributeError as e:
@@ -293,15 +293,74 @@ class StateMachine:
     def __init__(self, context: 'MainWindow'):
         self.context = context
         self.current_state = None
+        self.transition_matrix = self._build_transition_matrix()
+        self.debug_print("[FSM] 已加载状态-事件矩阵")
+        for line in self.get_transition_matrix_readable():
+            self.debug_print(f"[FSM] {line}")
         # 初始状态为未连接
         self.transition_to(DisconnectedState(self))
+
+    def _build_transition_matrix(self):
+        """显式状态-事件矩阵，统一管理状态跳转。"""
+        return {
+            DisconnectedState: {
+                'connect': ConnectedWaitingState,
+            },
+            ConnectedWaitingState: {
+                'data_received': ConnectedReceivingState,
+                'format_error': DataFormatMismatchState,
+                'disconnect': DisconnectedState,
+                'timeout': DataStoppedState,
+            },
+            ConnectedReceivingState: {
+                'timeout': DataStoppedState,
+                'format_error': DataFormatMismatchState,
+                'pause': PausedState,
+                'disconnect': DisconnectedState,
+            },
+            DataFormatMismatchState: {
+                'data_received': ConnectedReceivingState,
+                'timeout': DataStoppedState,
+                'format_error': DataFormatMismatchState,
+                'disconnect': DisconnectedState,
+            },
+            DataStoppedState: {
+                'data_received': ConnectedReceivingState,
+                'format_error': DataFormatMismatchState,
+                'disconnect': DisconnectedState,
+            },
+            PausedState: {
+                'resume': ConnectedReceivingState,
+                'disconnect': DisconnectedState,
+                'format_error': DataFormatMismatchState,
+            },
+        }
+
+    def get_transition_matrix_readable(self):
+        """返回可读的状态-事件矩阵行，便于日志和排查。"""
+        lines = []
+        for state_cls, event_map in self.transition_matrix.items():
+            for event, target_cls in event_map.items():
+                lines.append(f"{state_cls.__name__} --({event})-> {target_cls.__name__}")
+        return lines
+
+    def debug_print(self, message: str) -> None:
+        """FSM专用调试输出（不受普通log开关影响）。"""
+        if hasattr(self.context, 'fsm_debug_print'):
+            self.context.fsm_debug_print(message)
+        else:
+            print(message)
     
-    def transition_to(self, new_state: State) -> None:
+    def transition_to(self, new_state: State, event: str = 'manual', **kwargs) -> None:
         """转换到新状态
         
         Args:
             new_state: 新状态
         """
+        old_name = self.current_state.__class__.__name__ if self.current_state else 'None'
+        new_name = new_state.__class__.__name__
+        self.debug_print(f"[FSM][TRANSITION] {old_name} --({event})-> {new_name} | kwargs={kwargs}")
+
         if self.current_state:
             self.log_print(f"[状态机] 退出状态: {self.current_state.__class__.__name__}")
             self.current_state.exit()
@@ -309,6 +368,23 @@ class StateMachine:
         self.log_print(f"[状态机] 进入状态: {new_state.__class__.__name__}")
         self.current_state = new_state
         self.current_state.enter()
+        if hasattr(self.context, '_debug_ui_state_snapshot'):
+            self.context._debug_ui_state_snapshot("after_transition", event=event)
+
+    def _handle_self_transition(self, event: str, **kwargs) -> None:
+        """处理同状态内事件（如格式错误次数累加）。"""
+        if isinstance(self.current_state, DataFormatMismatchState) and event == 'format_error':
+            self.current_state.mismatch_count = kwargs.get('mismatch_count', self.current_state.mismatch_count + 1)
+            context = self.context
+            context.data_status_label.setText(f"数据状态: 数据格式不匹配 ({self.current_state.mismatch_count}次)")
+            self.debug_print(
+                f"[FSM][SELF] DataFormatMismatchState format_error mismatch_count={self.current_state.mismatch_count}"
+            )
+            if hasattr(context, '_debug_ui_state_snapshot'):
+                context._debug_ui_state_snapshot("after_self_transition", event=event)
+            return
+
+        self.debug_print(f"[FSM][SELF] 忽略同状态事件: state={self.current_state.__class__.__name__}, event={event}")
     
     def handle_event(self, event: str, **kwargs) -> None:
         """处理事件
@@ -317,8 +393,25 @@ class StateMachine:
             event: 事件名称
             **kwargs: 事件参数
         """
-        if self.current_state:
-            self.current_state.handle_event(event, **kwargs)
+        if not self.current_state:
+            return
+
+        state_cls = self.current_state.__class__
+        current_name = state_cls.__name__
+        self.debug_print(f"[FSM][EVENT] state={current_name}, event={event}, kwargs={kwargs}")
+
+        event_map = self.transition_matrix.get(state_cls, {})
+        target_cls = event_map.get(event)
+
+        if target_cls is None:
+            self.debug_print(f"[FSM][DROP] 未定义转换: state={current_name}, event={event}")
+            return
+
+        if target_cls == state_cls:
+            self._handle_self_transition(event, **kwargs)
+            return
+
+        self.transition_to(target_cls(self), event=event, **kwargs)
 
     def log_print(self, *args, **kwargs) -> None:
         """统一日志输出，委托给主窗口"""
@@ -586,6 +679,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         # 提前初始化日志开关，确保init_ui阶段可安全调用log_print
         self.log_enabled = False  # 默认关闭日志
+        self.fsm_debug_enabled = True  # FSM/UI调试日志默认开启，便于定位状态切换问题
         self.init_ui()
         self.init_components()
         self.init_connections()
@@ -594,6 +688,30 @@ class MainWindow(QMainWindow):
         """统一日志输出接口"""
         if self.log_enabled:
             print(*args, **kwargs)
+
+    def fsm_debug_print(self, *args, **kwargs) -> None:
+        """FSM/UI调试日志输出接口（不受普通日志开关影响）。"""
+        if self.fsm_debug_enabled:
+            print(*args, **kwargs)
+
+    def _debug_ui_state_snapshot(self, tag: str, event: str = "", **kwargs) -> None:
+        """打印UI状态快照，便于排查状态与显示不一致问题。"""
+        try:
+            state_name = self.state_machine.get_current_state_name() if hasattr(self, 'state_machine') else 'None'
+            data_status = self.data_status_label.text() if hasattr(self, 'data_status_label') else ''
+            conn_status = self.status_label.text() if hasattr(self, 'status_label') else ''
+            button_flashing = getattr(self.connect_btn, '_is_flashing', None) if hasattr(self, 'connect_btn') else None
+            button_color = None
+            if hasattr(self, 'connect_btn') and hasattr(self.connect_btn, '_color') and self.connect_btn._color is not None:
+                color = self.connect_btn._color
+                button_color = (color.red(), color.green(), color.blue())
+
+            self.fsm_debug_print(
+                f"[UI_DEBUG][{tag}] event={event} state={state_name} data_status={data_status} "
+                f"conn_status={conn_status} button_flashing={button_flashing} button_color={button_color} extra={kwargs}"
+            )
+        except Exception as e:
+            self.fsm_debug_print(f"[UI_DEBUG][{tag}] snapshot_failed={e}")
     
     def init_ui(self):
         """初始化UI"""
@@ -1097,131 +1215,188 @@ class MainWindow(QMainWindow):
             display_name = self.data_source_manager.get_display_channel_name(channel_name)
             normalized[display_name] = value
         return normalized
+
+    def _extract_waveform_data(self, data_dict):
+        """应用编排层：提取数据包中的通道数据并归一化通道名。"""
+        # 统一帧结构：直接使用channels字段
+        if isinstance(data_dict, dict) and 'channels' in data_dict:
+            waveform_data = data_dict.get('channels', {})
+            if not waveform_data:
+                return waveform_data
+            return self._normalize_waveform_data_keys(waveform_data)
+
+        # 兼容旧扁平字典结构
+        waveform_data = {
+            k: v for k, v in data_dict.items()
+            if k not in ('header', 'timestamp', 'format_error')
+        }
+        if not waveform_data:
+            return waveform_data
+        return self._normalize_waveform_data_keys(waveform_data)
+
+    def _is_format_error_packet(self, data_dict) -> bool:
+        """同时兼容统一帧与旧字典的格式错误标识。"""
+        if not isinstance(data_dict, dict):
+            return False
+
+        if data_dict.get('format_error'):
+            return True
+
+        meta = data_dict.get('meta', {})
+        return bool(meta.get('format_error'))
+
+    def _ensure_waveform_channels(self, channel_names):
+        """表现层协调：确保波形组件包含所有目标通道。"""
+        for channel_name in channel_names:
+            if channel_name not in self.waveform_widget.channels:
+                self.log_print(f"[DEBUG][auto_create] missing_channel={channel_name}")
+                color = self.channel_colors[len(self.waveform_widget.channels) % len(self.channel_colors)]
+                self.waveform_widget.add_channel(channel_name, color, 2)
+                if self.log_enabled:
+                    self._debug_channel_state("after_auto_create", incoming_keys=channel_names)
+
+    def _update_waveform_from_packet(self, data_dict):
+        """应用编排层：处理单个数据包的波形更新流程。"""
+        waveform_data = self._extract_waveform_data(data_dict)
+        if not waveform_data:
+            return
+
+        if self.log_enabled:
+            self._debug_channel_state("before_auto_create", incoming_keys=waveform_data.keys())
+
+        self._ensure_waveform_channels(waveform_data.keys())
+
+        timestamp = data_dict.get('timestamp', 0.0)
+        self.waveform_widget.update_channels(waveform_data, timestamp)
     
     def toggle_connection(self):
         """切换连接/断开状态"""
         if self.data_source_manager.is_connected():
-            # 断开连接
-            # 先停止数据接收线程，避免访问已断开的数据源
-            self.stop_receive_thread()
-            # 再断开数据源连接
-            self.data_source_manager.disconnect()
-            self.status_label.setText("未连接")
-            self.status_label.setStyleSheet("color: red;")
-            self.pause_btn.setEnabled(False)
-            # 启用数据源类型选择
-            self.source_type_combo.setEnabled(True)
-            self.data_count = 0
-            self.data_count_label.setText("接收数据: 0")
-            self.perf_label.setText("速率: 接收 0/s | 处理 0/s | 队列 0 | 丢包 0 | 字节 0 B/s | 解析 0 us/帧")
-            self.save_file_label.setText("保存文件: 无")
-            self.channels_label.setText("自动检测通道...")
-            self.last_channels_text = "自动检测通道..."
-            self.save_btn.setText("开始保存")
-            self.auto_save_enabled = False
-            self.clear_raw_data()  # 清空原始数据接收区
-            
-            # 转换到未连接状态
-            self.state_machine.handle_event('disconnect')
-            # 重置last_data_time，避免check_data_timeout继续检测超时
-            self.last_data_time = None
-            self.log_print("数据源已断开")
+            self._disconnect_flow()
         else:
-            # 连接
-            try:
-                source_type = self.source_type_combo.currentText()
-                header = self.header_edit.text().strip() or 'DATA'
-                
-                # 设置数据校验头
-                self.data_source_manager.set_data_header(header)
-                
-                if source_type == "UDP":
-                    # UDP数据源
-                    host = self.host_edit.text()
-                    port = int(self.port_edit.text())
-                    data_source = create_udp_source(host, port)
-                    # 设置原始数据回调函数
-                    data_source.set_raw_data_callback(self.on_raw_data_received)
-                    # 设置断开回调函数
-                    data_source.set_disconnect_callback(self.disconnect_callback)
-                    success = self.data_source_manager.set_source(data_source)
-                    
-                    if success:
-                        self.log_print(f"已连接到UDP {host}:{port}，数据校验头: {header}")
-                else:
-                    # 串口数据源
-                    from data_sources.manager import create_serial_source
-                    serial_port = self.serial_port_combo.currentData()  # 获取实际的串口号（如COM1）
-                    if not serial_port:
-                        QMessageBox.warning(self, "错误", "请选择有效的串口")
-                        return
-                    baudrate = int(self.baudrate_combo.currentText())
-                    protocol_text = self.protocol_combo.currentText()
-                    # 根据协议类型使用不同的数据校验头
-                    if protocol_text == '文本协议':
-                        protocol = 'text'
-                        serial_header = header  # 文本协议使用公用的数据校验头
-                    elif protocol_text == 'Justfloat':
-                        protocol = 'justfloat'
-                        serial_header = ''  # Justfloat不使用数据校验头
-                        # 获取Justfloat模式和Δt
-                        justfloat_mode_text = self.justfloat_mode_combo.currentText()
-                        justfloat_mode = 'with_timestamp' if justfloat_mode_text == '带时间戳' else 'without_timestamp'
-                        delta_t = float(self.delta_t_edit.text()) if self.delta_t_edit.text() else 1.0
-                    else:  # Rawdata
-                        protocol = 'rawdata'
-                        serial_header = ''  # Rawdata不使用数据校验头
-                    
-                    if protocol_text == 'Justfloat':
-                        data_source = create_serial_source(serial_port, baudrate, protocol, serial_header, justfloat_mode, delta_t)
-                    else:
-                        data_source = create_serial_source(serial_port, baudrate, protocol, serial_header)
-                    # 设置原始数据回调函数
-                    data_source.set_raw_data_callback(self.on_raw_data_received)
-                    # 设置断开回调函数
-                    data_source.set_disconnect_callback(self.disconnect_callback)
-                    success = self.data_source_manager.set_source(data_source)
-                    
-                    # 如果是Justfloat无时间戳模式，重置数据点计数器
-                    if protocol_text == 'Justfloat' and justfloat_mode == 'without_timestamp':
-                        data_source.reset_data_point_counter()
-                    
-                    if success:
-                        if protocol == 'text':
-                            self.log_print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {serial_header}")
-                        else:
-                            self.log_print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}")
-                
-                if success:
-                    self.status_label.setText("已连接")
-                    self.status_label.setStyleSheet("color: green;")
-                    self.pause_btn.setEnabled(True)
-                    # 禁用数据源类型选择
-                    self.source_type_combo.setEnabled(False)
-                    # 启动数据接收线程
-                    self.start_receive_thread()
+            self._connect_flow()
 
-                    # 清空旧通道
-                    self.waveform_widget.clear_all()
-                    self.channels_label.setText("自动检测通道...")
-                    self.last_channels_text = "自动检测通道..."
+    def _disconnect_flow(self):
+        """连接编排层：统一处理断开流程（不改业务语义）"""
+        self._debug_ui_state_snapshot("before_disconnect_flow", event="disconnect")
+        # 先停止数据接收线程，避免访问已断开的数据源
+        self.stop_receive_thread()
+        # 再断开数据源连接
+        self.data_source_manager.disconnect()
+        self.status_label.setText("未连接")
+        self.status_label.setStyleSheet("color: red;")
+        self.pause_btn.setEnabled(False)
+        # 启用数据源类型选择
+        self.source_type_combo.setEnabled(True)
+        self.data_count = 0
+        self.data_count_label.setText("接收数据: 0")
+        self.perf_label.setText("速率: 接收 0/s | 处理 0/s | 队列 0 | 丢包 0 | 字节 0 B/s | 解析 0 us/帧")
+        self.save_file_label.setText("保存文件: 无")
+        self.channels_label.setText("自动检测通道...")
+        self.last_channels_text = "自动检测通道..."
+        self.save_btn.setText("开始保存")
+        self.auto_save_enabled = False
+        self.clear_raw_data()  # 清空原始数据接收区
 
-                    # 重置校验头不匹配计数器
-                    self.data_source_manager.reset_header_mismatch_count()
+        # 转换到未连接状态
+        self.state_machine.handle_event('disconnect')
+        # 重置last_data_time，避免check_data_timeout继续检测超时
+        self.last_data_time = None
+        self.log_print("数据源已断开")
+        self._debug_ui_state_snapshot("after_disconnect_flow", event="disconnect")
 
-                    # 转换到已连接-等待数据状态
-                    self.state_machine.handle_event('connect')
+    def _build_data_source_from_ui(self, source_type: str, header: str):
+        """应用编排层：根据UI配置创建数据源并返回连接日志。"""
+        if source_type == "UDP":
+            host = self.host_edit.text()
+            port = int(self.port_edit.text())
+            data_source = create_udp_source(host, port)
+            return data_source, f"已连接到UDP {host}:{port}，数据校验头: {header}", None
 
-                    # 默认不自动保存，避免磁盘IO影响实时接收性能
-                    self.save_btn.setText("开始保存")
-                    self.save_file_label.setText("保存文件: 无")
-                    self.auto_save_enabled = False
-                else:
-                    QMessageBox.warning(self, "失败", "连接失败，请检查配置")
-            except ValueError:
-                QMessageBox.warning(self, "错误", "请输入有效的端口号或波特率")
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"连接失败: {str(e)}")
+        # 串口数据源
+        serial_port = self.serial_port_combo.currentData()  # 获取实际的串口号（如COM1）
+        if not serial_port:
+            QMessageBox.warning(self, "错误", "请选择有效的串口")
+            return None, None, None
+
+        baudrate = int(self.baudrate_combo.currentText())
+        protocol_text = self.protocol_combo.currentText()
+
+        if protocol_text == '文本协议':
+            protocol = 'text'
+            serial_header = header  # 文本协议使用公用的数据校验头
+            data_source = create_serial_source(serial_port, baudrate, protocol, serial_header)
+            return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {serial_header}", None
+
+        if protocol_text == 'Justfloat':
+            protocol = 'justfloat'
+            serial_header = ''  # Justfloat不使用数据校验头
+            justfloat_mode_text = self.justfloat_mode_combo.currentText()
+            justfloat_mode = 'with_timestamp' if justfloat_mode_text == '带时间戳' else 'without_timestamp'
+            delta_t = float(self.delta_t_edit.text()) if self.delta_t_edit.text() else 1.0
+            data_source = create_serial_source(serial_port, baudrate, protocol, serial_header, justfloat_mode, delta_t)
+            return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}", justfloat_mode
+
+        # Rawdata
+        protocol = 'rawdata'
+        serial_header = ''
+        data_source = create_serial_source(serial_port, baudrate, protocol, serial_header)
+        return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}", None
+
+    def _connect_flow(self):
+        """连接编排层：统一处理连接流程（不改业务语义）"""
+        try:
+            source_type = self.source_type_combo.currentText()
+            header = self.header_edit.text().strip() or 'DATA'
+
+            # 设置数据校验头
+            self.data_source_manager.set_data_header(header)
+
+            data_source, success_log, justfloat_mode = self._build_data_source_from_ui(source_type, header)
+            if data_source is None:
+                return
+
+            # 设置原始数据回调函数
+            data_source.set_raw_data_callback(self.on_raw_data_received)
+            # 设置断开回调函数
+            data_source.set_disconnect_callback(self.disconnect_callback)
+            success = self.data_source_manager.set_source(data_source)
+
+            # 如果是Justfloat无时间戳模式，重置数据点计数器
+            if success and justfloat_mode == 'without_timestamp':
+                data_source.reset_data_point_counter()
+
+            if success:
+                self.log_print(success_log)
+                self.status_label.setText("已连接")
+                self.status_label.setStyleSheet("color: green;")
+                self.pause_btn.setEnabled(True)
+                # 禁用数据源类型选择
+                self.source_type_combo.setEnabled(False)
+                # 启动数据接收线程
+                self.start_receive_thread()
+
+                # 清空旧通道
+                self.waveform_widget.clear_all()
+                self.channels_label.setText("自动检测通道...")
+                self.last_channels_text = "自动检测通道..."
+
+                # 重置校验头不匹配计数器
+                self.data_source_manager.reset_header_mismatch_count()
+
+                # 转换到已连接-等待数据状态
+                self.state_machine.handle_event('connect')
+
+                # 默认不自动保存，避免磁盘IO影响实时接收性能
+                self.save_btn.setText("开始保存")
+                self.save_file_label.setText("保存文件: 无")
+                self.auto_save_enabled = False
+            else:
+                QMessageBox.warning(self, "失败", "连接失败，请检查配置")
+        except ValueError:
+            QMessageBox.warning(self, "错误", "请输入有效的端口号或波特率")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"连接失败: {str(e)}")
     
     def on_source_type_changed(self, source_type: str):
         """数据源类型改变事件处理
@@ -1501,8 +1676,12 @@ class MainWindow(QMainWindow):
     def on_disconnect_from_thread(self):
         """从接收线程中处理断开连接（在主线程中执行）"""
         self.log_print("[MainWindow] 收到断开连接信号")
-        # 在主线程中执行断开逻辑
-        self.toggle_connection()
+        self._debug_ui_state_snapshot("on_disconnect_signal", event="disconnect_signal")
+        # 在主线程中执行强制断开逻辑，避免误进入“连接”分支
+        if self.state_machine.is_connected():
+            self._disconnect_flow()
+        else:
+            self.fsm_debug_print("[UI_DEBUG] disconnect_signal收到时已处于未连接状态，忽略重复断开")
     
     def stop_receive_thread(self):
         """停止数据接收线程"""
@@ -1589,7 +1768,7 @@ class MainWindow(QMainWindow):
                 data_dict = self.data_queue.get(block=False)
                 
                 # 检查是否是格式错误标识
-                if data_dict.get('format_error'):
+                if self._is_format_error_packet(data_dict):
                     has_format_error = True
                     continue
 
@@ -1600,28 +1779,7 @@ class MainWindow(QMainWindow):
                 # 使用发送端时间戳更新最后接收时间，减少系统时钟调用
                 self.last_data_time = int(data_dict.get('timestamp', QDateTime.currentMSecsSinceEpoch()))
 
-                # 更新波形显示（仅通道数据）
-                waveform_data = {
-                    k: v for k, v in data_dict.items()
-                    if k not in ('header', 'timestamp', 'format_error')
-                }
-                if waveform_data:
-                    waveform_data = self._normalize_waveform_data_keys(waveform_data)
-
-                    if self.log_enabled:
-                        self._debug_channel_state("before_auto_create", incoming_keys=waveform_data.keys())
-
-                    # 自动创建新通道
-                    for channel_name in waveform_data.keys():
-                        if channel_name not in self.waveform_widget.channels:
-                            self.log_print(f"[DEBUG][auto_create] missing_channel={channel_name}")
-                            color = self.channel_colors[len(self.waveform_widget.channels) % len(self.channel_colors)]
-                            self.waveform_widget.add_channel(channel_name, color, 2)
-                            if self.log_enabled:
-                                self._debug_channel_state("after_auto_create", incoming_keys=waveform_data.keys())
-
-                    timestamp = data_dict.get('timestamp', 0.0)
-                    self.waveform_widget.update_channels(waveform_data, timestamp)
+                self._update_waveform_from_packet(data_dict)
                 
                 processed_count += 1
             except queue.Empty:
@@ -1632,11 +1790,16 @@ class MainWindow(QMainWindow):
                 break
 
         # 批量处理后再触发状态机，避免每点一次状态切换开销
-        if has_valid_data and not self.waveform_widget.is_paused:
-            self.state_machine.handle_event('data_received')
-        elif has_format_error and not has_valid_data:
+        # 对格式错误事件优先上报，确保UI能及时进入红色闪烁状态。
+        if has_format_error:
             header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
+            self.fsm_debug_print(
+                f"[UI_DEBUG][update_data] format_error_detected mismatch_count={header_mismatch_count} has_valid_data={has_valid_data}"
+            )
             self.state_machine.handle_event('format_error', mismatch_count=header_mismatch_count)
+        elif has_valid_data and not self.waveform_widget.is_paused:
+            self.fsm_debug_print("[UI_DEBUG][update_data] data_received_detected")
+            self.state_machine.handle_event('data_received')
 
         # 限频更新文本UI，避免高频setText导致主线程卡顿
         if processed_count > 0:
@@ -1665,6 +1828,7 @@ class MainWindow(QMainWindow):
             if elapsed > self.data_timeout:
                 # 数据超时，触发timeout事件
                 self.log_print(f"[check_data_timeout] 数据超时，触发timeout事件")
+                self.fsm_debug_print(f"[UI_DEBUG][timeout] elapsed_ms={elapsed}, threshold_ms={self.data_timeout}")
                 self.state_machine.handle_event('timeout')
                 # 重置last_data_time，避免重复检测超时
                 self.last_data_time = None
