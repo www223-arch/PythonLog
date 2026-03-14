@@ -59,7 +59,7 @@ class UDPSender:
         """
         self.is_running = True
         start_time = time.time()
-        sample_rate = 100
+        sample_rate = 2000
           # 采样率
         
         # 使用自定义通道名称，如果没有则使用默认

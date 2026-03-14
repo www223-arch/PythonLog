@@ -321,9 +321,11 @@ class WaveformWidget(QWidget):
     def clear_all(self) -> None:
         """清空所有数据"""
         for channel in self.channels.values():
-            channel['data'].clear()
-            channel['x_data'].clear()
             channel['curve'].setData([], [])
+            self.plot_widget.removeItem(channel['curve'])
+
+        self.channels.clear()
+        self.channel_combo.clear()
         self.time_counter = 0
         self.clear_marked_points()  # 清空标记点
         
@@ -337,6 +339,49 @@ class WaveformWidget(QWidget):
         self.freq_info_label.setText("请选择通道并点击'分析'按钮")
         
         print("所有数据已清空")
+
+    def _estimate_sample_rate_from_x_data(self, x_data: List[float]) -> float:
+        """根据时间戳估算采样率（Hz）。
+
+        x_data单位为ms，优先使用正向时间间隔的中位数，降低抖动影响。
+        """
+        if len(x_data) < 2:
+            return self.sample_rate
+
+        intervals = [
+            x_data[i] - x_data[i - 1]
+            for i in range(1, len(x_data))
+            if x_data[i] > x_data[i - 1]
+        ]
+
+        if not intervals:
+            return self.sample_rate
+
+        median_interval_ms = float(np.median(intervals))
+        if median_interval_ms <= 0:
+            return self.sample_rate
+
+        return 1000.0 / median_interval_ms
+
+    def _get_effective_sample_rate(self, x_data: List[float]) -> float:
+        """获取用于FFT的有效采样率。"""
+        delta_t = None
+        if hasattr(self, 'data_source_manager') and self.data_source_manager:
+            delta_t = self.data_source_manager.get_delta_t()
+
+        # Justfloat无时间戳模式：优先使用理论采样率
+        if delta_t is not None and delta_t > 0:
+            return 1000.0 / delta_t
+
+        # 其他模式：使用时间戳估算
+        return self._estimate_sample_rate_from_x_data(x_data)
+
+    def _find_first_fft_eligible_channel(self) -> Optional[str]:
+        """找到第一个可执行FFT分析的通道。"""
+        for channel_name, channel in self.channels.items():
+            if len(channel['data']) >= 10:
+                return channel_name
+        return None
     
     def clear_channel(self, name: str) -> None:
         """清空指定通道数据
@@ -657,6 +702,22 @@ class WaveformWidget(QWidget):
                 freq_curve.setPen(freq_pen)
             
             print(f"通道 '{name}' 颜色已更新为: {color}")
+
+    def _debug_legend_labels(self) -> list:
+        """调试：获取当前图例标签文本"""
+        labels = []
+        legend = self.plot_widget.plotItem.legend
+        if legend is None:
+            return labels
+        try:
+            for _, label_item in legend.items:
+                try:
+                    labels.append(label_item.text)
+                except Exception:
+                    labels.append(str(label_item))
+        except Exception:
+            pass
+        return labels
     
     def rename_channel(self, old_name: str, new_name: str) -> None:
         """重命名通道
@@ -669,28 +730,44 @@ class WaveformWidget(QWidget):
             print(f"通道 '{old_name}' 不存在")
             return
 
+        new_name = new_name.strip()
+
+        if not new_name:
+            print("新通道名不能为空")
+            return
+
         if new_name in self.channels:
             print(f"通道 '{new_name}' 已存在")
             return
-
-        if not new_name.strip():
-            print("新通道名不能为空")
-            return
         
-        # 更新channels字典
+        # 重建曲线，确保图例中的名称同步更新
         channel_info = self.channels[old_name]
+        old_curve = channel_info['curve']
+        x_data = channel_info['x_data']
+        y_data = channel_info['data']
+        color = channel_info['color']
+        width = channel_info['width']
+
+        # 显式清理图例中的旧条目，避免重命名后残留旧通道标签
+        legend = self.plot_widget.plotItem.legend
+        if legend is not None:
+            try:
+                legend.removeItem(old_name)
+            except Exception:
+                pass
+            try:
+                legend.removeItem(new_name)
+            except Exception:
+                pass
+
+        self.plot_widget.removeItem(old_curve)
+
+        pen = pg.mkPen(color=color, width=width)
+        new_curve = self.plot_widget.plot(x_data, y_data, pen=pen, name=new_name)
+        channel_info['curve'] = new_curve
+
         self.channels[new_name] = channel_info
         del self.channels[old_name]
-
-        # 更新曲线名称
-        curve = self.channels[new_name]['curve']
-        # 方法1：直接设置name属性
-        curve.opts['name'] = new_name
-        # 方法2：重新设置数据以更新图例
-        if curve.xData is not None and curve.yData is not None:
-            curve.setData(curve.xData, curve.yData, name=new_name)
-        else:
-            curve.setData(name=new_name)
 
         # 更新通道选择下拉框
         combo_index = self.channel_combo.findText(old_name)
@@ -708,6 +785,10 @@ class WaveformWidget(QWidget):
             self.freq_curves[new_name] = self.freq_curves[old_name]
             del self.freq_curves[old_name]
         
+        print(f"[DEBUG][waveform_rename] channels={list(self.channels.keys())}")
+        print(f"[DEBUG][waveform_rename] combo_items={[self.channel_combo.itemText(i) for i in range(self.channel_combo.count())]}")
+        print(f"[DEBUG][waveform_rename] legend_labels={self._debug_legend_labels()}")
+
         print(f"通道 '{old_name}' 已重命名为 '{new_name}'")
     
     def get_channel_data(self, name: str) -> Optional[Tuple[List[float], List[float]]]:
@@ -744,52 +825,36 @@ class WaveformWidget(QWidget):
     def perform_fft_analysis(self) -> None:
         """执行FFT频域分析"""
         channel_name = self.channel_combo.currentText()
-        
         if not channel_name or channel_name not in self.channels:
-            self.freq_info_label.setText("请先选择一个有效的通道")
-            return
+            fallback_channel = self._find_first_fft_eligible_channel()
+            if fallback_channel is None:
+                self.freq_info_label.setText("请先选择一个有效的通道")
+                return
+            channel_name = fallback_channel
+            combo_index = self.channel_combo.findText(channel_name)
+            if combo_index >= 0:
+                self.channel_combo.setCurrentIndex(combo_index)
         
         channel = self.channels[channel_name]
         data = channel['data']
         x_data = channel['x_data']
         
         if len(data) < 10:
-            self.freq_info_label.setText(f"数据点太少（{len(data)}个），无法进行频域分析")
-            return
+            fallback_channel = self._find_first_fft_eligible_channel()
+            if fallback_channel and fallback_channel != channel_name:
+                channel_name = fallback_channel
+                channel = self.channels[channel_name]
+                data = channel['data']
+                x_data = channel['x_data']
+                combo_index = self.channel_combo.findText(channel_name)
+                if combo_index >= 0:
+                    self.channel_combo.setCurrentIndex(combo_index)
+            else:
+                self.freq_info_label.setText(f"数据点太少（{len(data)}个），无法进行频域分析")
+                return
         
         try:
-            # 使用理论采样率（1000 / Δt）
-            print(f"[perform_fft_analysis] 开始频域分析...")
-            print(f"[perform_fft_analysis] data_source_manager: {self.data_source_manager}")
-            
-            delta_t = None
-            if hasattr(self, 'data_source_manager') and self.data_source_manager:
-                delta_t = self.data_source_manager.get_delta_t()
-                print(f"[perform_fft_analysis] get_delta_t() 返回: {delta_t}")
-            else:
-                print(f"[perform_fft_analysis] data_source_manager 为 None 或不存在!")
-            
-            if delta_t is not None:
-                # Justfloat无时间戳模式：使用理论采样率
-                actual_sample_rate = 1000.0 / delta_t
-                print(f"[perform_fft_analysis] 使用理论采样率: {actual_sample_rate:.2f} Hz (Δt: {delta_t:.2f} ms)")
-            else:
-                # 其他模式：根据时间戳计算实际的采样率
-                print(f"[perform_fft_analysis] delta_t 为 None，使用时间戳计算采样率")
-                if len(x_data) >= 2:
-                    # 计算时间间隔的平均值（单位：ms）
-                    time_intervals = []
-                    for i in range(1, len(x_data)):
-                        interval = x_data[i] - x_data[i-1]
-                        time_intervals.append(interval)
-                    avg_interval = sum(time_intervals) / len(time_intervals)
-                    # 采样率 = 1000 / 平均间隔（ms）
-                    actual_sample_rate = 1000.0 / avg_interval if avg_interval > 0 else 1.0
-                    print(f"[perform_fft_analysis] 计算采样率: {actual_sample_rate:.2f} Hz (平均间隔: {avg_interval:.2f} ms)")
-                else:
-                    # 使用默认采样率
-                    actual_sample_rate = self.sample_rate
-                    print(f"[perform_fft_analysis] 使用默认采样率: {actual_sample_rate:.2f} Hz")
+            actual_sample_rate = self._get_effective_sample_rate(x_data)
             
             # 执行FFT
             n = len(data)
@@ -1076,6 +1141,7 @@ class WaveformWidget(QWidget):
             self.freq_curves.clear()
             
             all_peaks = []
+            sample_rates = []
             
             # 对每个通道进行FFT分析
             for channel_name, channel in self.channels.items():
@@ -1083,11 +1149,15 @@ class WaveformWidget(QWidget):
                 
                 if len(data) < 10:
                     continue
+
+                x_data = channel['x_data']
+                actual_sample_rate = self._get_effective_sample_rate(x_data)
+                sample_rates.append(actual_sample_rate)
                 
                 # 执行FFT
                 n = len(data)
                 fft_result = fft(data)
-                fft_freq = fftfreq(n, d=1.0/self.sample_rate)
+                fft_freq = fftfreq(n, d=1.0/actual_sample_rate)
                 
                 # 只取正频率部分
                 positive_freq_idx = fft_freq >= 0
@@ -1115,8 +1185,9 @@ class WaveformWidget(QWidget):
             
             # 更新频域信息
             peak_info = " | ".join([f"{n}:{f:.2f}Hz" for n, f, m in all_peaks[:10]])
+            display_rate = float(np.mean(sample_rates)) if sample_rates else self.sample_rate
             info_text = (f"已显示 {len(self.freq_curves)} 个通道的频域分析\n"
-                        f"采样率: {self.sample_rate:.1f} Hz\n"
+                        f"采样率: {display_rate:.1f} Hz\n"
                         f"峰值: {peak_info}")
             self.freq_info_label.setText(info_text)
             

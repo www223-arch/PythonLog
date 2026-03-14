@@ -163,6 +163,7 @@ class SerialDataSource(DataSource):
 
         start_ns = time.perf_counter_ns()
         self.text_buffer.extend(data)
+        parse_error_detected = False
 
         while True:
             newline_pos = self.text_buffer.find(b'\n')
@@ -188,8 +189,16 @@ class SerialDataSource(DataSource):
                 if parsed and len(parsed) > 0:
                     self.parsed_frames.append(parsed)
                     self.parsed_frame_count += 1
+                else:
+                    parse_error_detected = True
             except Exception:
+                parse_error_detected = True
                 continue
+
+        # 对文本协议：若本批出现解析失败且未产出有效帧，补一个FORMAT_ERROR帧。
+        # 这样上层FSM能够进入“数据格式不匹配”而不是一直停留在“等待数据”。
+        if parse_error_detected and not self.parsed_frames:
+            self.parsed_frames.append(('FORMAT_ERROR', time.time()))
 
         self.parse_time_ns_total += time.perf_counter_ns() - start_ns
     

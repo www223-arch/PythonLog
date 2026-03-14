@@ -4,6 +4,7 @@
 管理多个数据源，提供统一的数据访问接口。
 """
 
+import time
 from typing import Optional, Dict, Any, List
 from .base import DataSource
 from .udp_source import UDPDataSource
@@ -32,6 +33,30 @@ class DataSourceManager:
         self.last_valid_data_time = None  # 最后一次有效数据的时间
         self.channel_name_mapping = {}  # 通道名映射字典 {原始名: 新名}
         self.log_enabled = False  # 日志开关，默认关闭以提高性能
+
+    def _frame_to_legacy_dict(self, frame: Dict[str, Any]) -> Dict[str, float]:
+        """将统一帧转换为旧版扁平字典，便于兼容旧调用路径。"""
+        data_dict = {
+            'header': frame.get('header', ''),
+            'timestamp': frame.get('timestamp', 0.0)
+        }
+
+        if frame.get('meta', {}).get('format_error'):
+            data_dict['format_error'] = True
+            return data_dict
+
+        channels = frame.get('channels', {})
+        if channels:
+            data_dict.update(channels)
+
+        return data_dict
+
+    def _is_format_sensitive_protocol(self, protocol: str) -> bool:
+        """判断当前协议是否需要格式校验失败触发format_error状态。"""
+        if protocol == 'rawdata':
+            return False
+        # 文本协议及带结构要求的协议都属于格式敏感。
+        return True
 
  
     
@@ -65,117 +90,150 @@ class DataSourceManager:
             print(f"设置数据源失败: {e}")
             return False
     
+    def read_frame(self) -> Optional[Dict[str, Any]]:
+        """读取统一帧数据
+
+        Returns:
+            统一帧结构：
+            {
+                'header': str,
+                'timestamp': float(ms),
+                'channels': {name: value, ...},
+                'meta': {'format_error': bool, 'protocol': str}
+            }
+            无数据时返回None。
+        """
+        if not self.current_source:
+            return None
+
+        data = self.current_source.read_data()
+        if data is None:
+            return None
+
+        protocol = ''
+        if hasattr(self.current_source, 'get_protocol'):
+            protocol = self.current_source.get_protocol()
+
+        # 空元组通常表示收到数据但解析失败（非超时）；对格式敏感协议上报format_error。
+        if len(data) == 0:
+            if self._is_format_sensitive_protocol(protocol):
+                self.header_mismatch_count += 1
+                timestamp_ms = time.time() * 1000.0
+                return {
+                    'header': 'FORMAT_ERROR',
+                    'timestamp': timestamp_ms,
+                    'channels': {},
+                    'meta': {'format_error': True, 'protocol': protocol}
+                }
+            return None
+
+        # 解析基础字段
+        header = str(data[0])
+        timestamp_seconds = float(data[1])
+        timestamp_ms = timestamp_seconds * 1000.0
+
+        # 更新最后接收数据时间（包括校验错误）
+        self.last_data_time = timestamp_ms
+        self.last_valid_data_time = timestamp_ms
+
+        # Rawdata模式：仅透传基础信息
+        if protocol == 'rawdata':
+            return {
+                'header': header,
+                'timestamp': timestamp_ms,
+                'channels': {},
+                'meta': {'format_error': False, 'protocol': protocol}
+            }
+
+        # 数据格式错误
+        if header == 'FORMAT_ERROR':
+            self.header_mismatch_count += 1
+            if self.log_enabled:
+                print(f"[警告] 数据格式不匹配 - 丢弃数据")
+            return {
+                'header': header,
+                'timestamp': timestamp_ms,
+                'channels': {},
+                'meta': {'format_error': True, 'protocol': protocol}
+            }
+
+        # 没有通道数据（仅更新状态）
+        if len(data) < 3:
+            return {
+                'header': header,
+                'timestamp': timestamp_ms,
+                'channels': {},
+                'meta': {'format_error': False, 'protocol': protocol}
+            }
+
+        # 校验头验证（仅在header非空时）
+        if self.header_enabled and header != '' and header != self.data_header:
+            self.header_mismatch_count += 1
+            if self.log_enabled:
+                print(f"[警告] 数据校验头不匹配: 期望'{self.data_header}', 收到'{header}' - 丢弃数据")
+            return {
+                'header': header,
+                'timestamp': timestamp_ms,
+                'channels': {},
+                'meta': {'format_error': True, 'protocol': protocol}
+            }
+
+        self.header_mismatch_count = 0
+        self.last_valid_data_time = timestamp_ms
+
+        # 通道名来源：优先使用数据源提供的通道名，否则按channel{i}
+        channel_names = []
+        if hasattr(self.current_source, 'get_channel_names'):
+            channel_names = self.current_source.get_channel_names()
+
+        channels = {}
+        for i, value in enumerate(data[2:]):
+            if i < len(channel_names):
+                original_channel_name = channel_names[i]
+            else:
+                original_channel_name = f'channel{i+1}'
+
+            display_channel_name = self.get_display_channel_name(original_channel_name)
+            channels[display_channel_name] = float(value)
+
+            # 自动添加新通道（使用映射后的名称）
+            if display_channel_name not in self.channel_set and original_channel_name not in self.channel_set:
+                self.channels.append(display_channel_name)
+                self.channel_set.add(display_channel_name)
+                if self.log_enabled:
+                    print(f"[read_frame] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
+
+        frame = {
+            'header': header,
+            'timestamp': timestamp_ms,
+            'channels': channels,
+            'meta': {'format_error': False, 'protocol': protocol}
+        }
+
+        # 与旧read_data行为保持一致：仅在有效通道数据帧时写入缓冲和CSV
+        legacy_data_dict = self._frame_to_legacy_dict(frame)
+        self.data_buffer.append(legacy_data_dict)
+
+        if len(self.data_buffer) > self.max_buffer_size:
+            self.data_buffer = self.data_buffer[-self.max_buffer_size:]
+
+        if self.data_saver.is_active():
+            self.data_saver.save_data(legacy_data_dict)
+
+        return frame
+
     def read_data(self) -> Optional[Dict[str, float]]:
-        """读取数据
-        
+        """读取数据（兼容旧接口）
+
         Returns:
             读取到的数据字典，如果没有数据源返回None
             格式: {'header': str, 'timestamp': float, '通道一': float, '通道二': float, ...}
         """
-        if not self.current_source:
+        frame = self.read_frame()
+        if frame is None:
             return None
-        
-        data = self.current_source.read_data()
-        
-        if data is not None and len(data) > 0:
-            # 解析数据：第一个元素是数据校验头，第二个是时间戳，后面是通道数据
-            header = str(data[0])
-            timestamp_seconds = float(data[1])
-            # 将时间戳转换为ms（统一单位）
-            timestamp_ms = timestamp_seconds * 1000.0
-            
-            # 更新最后接收数据的时间（包括校验头不匹配的数据）
-            self.last_data_time = timestamp_ms
-            # 更新最后有效数据的时间（用于计算采样率）
-            self.last_valid_data_time = timestamp_ms
-            
-            # 检查是否是Rawdata模式
-            if hasattr(self.current_source, 'get_protocol'):
-                protocol = self.current_source.get_protocol()
-                if protocol == 'rawdata':
-                    # Rawdata模式，直接返回数据，不进行任何校验
-                    data_dict = {'header': header, 'timestamp': timestamp_ms}
-                    return data_dict
-            
-            # 检查是否是数据格式错误标识（先检查这个）
-            if header == 'FORMAT_ERROR':
-                self.header_mismatch_count += 1
-                if self.log_enabled:
-                    print(f"[警告] 数据格式不匹配 - 丢弃数据")
-                # 返回特殊标识，表示有格式错误
-                return {'format_error': True, 'header': header, 'timestamp': timestamp_ms}
-            
-            # 检查是否有通道数据（Rawdata模式可能没有）
-            if len(data) < 3:
-                # 没有通道数据，返回空数据字典以更新状态
-                data_dict = {'header': header, 'timestamp': timestamp_ms}
-                return data_dict
-            
-            # 验证数据校验头（只在数据校验头不为空时才验证）
-            if self.header_enabled and header != '' and header != self.data_header:
-                self.header_mismatch_count += 1
-                if self.log_enabled:
-                    print(f"[警告] 数据校验头不匹配: 期望'{self.data_header}', 收到'{header}' - 丢弃数据")
-                return None
-            
-            # 重置校验头不匹配计数器
-            self.header_mismatch_count = 0
-            self.last_valid_data_time = timestamp_ms
-            
-            # 构建数据字典
-            data_dict = {'header': header, 'timestamp': timestamp_ms}
-            
-            # 从UDP数据源获取通道名称
-            if hasattr(self.current_source, 'get_channel_names'):
-                channel_names = self.current_source.get_channel_names()
-                
-                # 使用提取到的通道名称
-                for i, value in enumerate(data[2:]):
-                    if i < len(channel_names):
-                        original_channel_name = channel_names[i]
-                    else:
-                        original_channel_name = f'channel{i+1}'
-                    # 应用通道名映射
-                    display_channel_name = self.get_display_channel_name(original_channel_name)
-                    data_dict[display_channel_name] = float(value)
-                    
-                    # 自动添加新通道（使用映射后的名称）
-                    # 检查：映射后的通道名是否已存在，或者原始通道名是否已存在
-                    if display_channel_name not in self.channel_set and original_channel_name not in self.channel_set:
-                        self.channels.append(display_channel_name)
-                        self.channel_set.add(display_channel_name)
-                        if self.log_enabled:
-                            print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
-            else:
-                # 如果没有get_channel_names方法，使用默认通道名称（Justfloat模式）
-                for i, value in enumerate(data[2:], 1):
-                    original_channel_name = f'channel{i}'
-                    # 应用通道名映射
-                    display_channel_name = self.get_display_channel_name(original_channel_name)
-                    data_dict[display_channel_name] = float(value)
-                    
-                    # 自动添加新通道（使用映射后的名称）
-                    # 检查：映射后的通道名是否已存在，或者原始通道名是否已存在
-                    if display_channel_name not in self.channel_set and original_channel_name not in self.channel_set:
-                        self.channels.append(display_channel_name)
-                        self.channel_set.add(display_channel_name)
-                        if self.log_enabled:
-                            print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
-            
-            # 保存到缓冲区
-            self.data_buffer.append(data_dict)
-            
-            # 限制缓冲区大小
-            if len(self.data_buffer) > self.max_buffer_size:
-                self.data_buffer = self.data_buffer[-self.max_buffer_size:]
-            
-            # 保存到CSV文件
-            if self.data_saver.is_active():
-                self.data_saver.save_data(data_dict)
-            
-            return data_dict
-        
-        return None
+
+        return self._frame_to_legacy_dict(frame)
     
     def get_buffer(self) -> list:
         """获取数据缓冲区
@@ -321,34 +379,36 @@ class DataSourceManager:
         Returns:
             Δt值（ms），如果不是Justfloat无时间戳模式，返回None
         """
-        print(f"[get_delta_t] 开始检查...")
-        print(f"[get_delta_t] current_source: {self.current_source}")
-        
-        if self.current_source:
-            print(f"[get_delta_t] current_source.protocol: {self.current_source.protocol}")
-            print(f"[get_delta_t] hasattr(current_source, 'protocol'): {hasattr(self.current_source, 'protocol')}")
-            print(f"[get_delta_t] hasattr(current_source, 'justfloat_mode'): {hasattr(self.current_source, 'justfloat_mode')}")
-            
-            if hasattr(self.current_source, 'protocol'):
-                if self.current_source.protocol == 'justfloat':
-                    print(f"[get_delta_t] protocol == 'justfloat'，检查justfloat_mode...")
-                    if hasattr(self.current_source, 'justfloat_mode'):
-                        print(f"[get_delta_t] justfloat_mode: {self.current_source.justfloat_mode}")
-                        if self.current_source.justfloat_mode == 'without_timestamp':
-                            print(f"[get_delta_t] justfloat_mode == 'without_timestamp'，返回delta_t: {self.current_source.delta_t}")
-                            return self.current_source.delta_t
-                        else:
-                            print(f"[get_delta_t] justfloat_mode不是'without_timestamp'，返回None")
-                    else:
-                        print(f"[get_delta_t] 没有justfloat_mode属性，返回None")
-                else:
-                    print(f"[get_delta_t] protocol不是'justfloat'，返回None")
-            else:
-                print(f"[get_delta_t] 没有protocol属性，返回None")
-        else:
-            print(f"[get_delta_t] current_source为None，返回None")
-        
-        return None
+        source = self.current_source
+        if source is None:
+            return None
+
+        protocol = None
+        if hasattr(source, 'get_protocol'):
+            try:
+                protocol = source.get_protocol()
+            except Exception:
+                return None
+        elif hasattr(source, 'protocol'):
+            protocol = getattr(source, 'protocol', None)
+
+        if protocol != 'justfloat':
+            return None
+
+        if not hasattr(source, 'justfloat_mode'):
+            return None
+
+        if getattr(source, 'justfloat_mode', None) != 'without_timestamp':
+            return None
+
+        delta_t = getattr(source, 'delta_t', None)
+        if delta_t is None:
+            return None
+
+        try:
+            return float(delta_t)
+        except (TypeError, ValueError):
+            return None
     
     def set_channel_name_mapping(self, old_name: str, new_name: str) -> None:
         """设置通道名映射
@@ -357,8 +417,52 @@ class DataSourceManager:
             old_name: 原始通道名
             new_name: 新通道名
         """
+        old_name = old_name.strip()
+        new_name = new_name.strip()
+
+        if not old_name or not new_name:
+            return
+
+        if old_name == new_name:
+            return
+
+        # 将所有当前映射到old_name的键统一更新为new_name，支持多次重命名。
+        # 例如: channel1->111 后再 111->222，则 channel1 也应直接映射到 222。
+        alias_keys = [
+            key for key, mapped_name in self.channel_name_mapping.items()
+            if mapped_name == old_name
+        ]
+
+        if not alias_keys:
+            alias_keys = [old_name]
+
+        for key in alias_keys:
+            self.channel_name_mapping[key] = new_name
+
+        # 记录显示名别名，吸收重命名瞬间队列中在途的旧显示名数据包。
         self.channel_name_mapping[old_name] = new_name
+
+        # 同步更新缓存中的通道列表与集合
+        self._replace_channel_in_cache(old_name, new_name)
+
         print(f"通道名映射已设置: {old_name} -> {new_name}")
+
+    def _replace_channel_in_cache(self, old_name: str, new_name: str) -> None:
+        """同步替换通道缓存中的名称并保持唯一性"""
+        if old_name in self.channels:
+            idx = self.channels.index(old_name)
+            self.channels[idx] = new_name
+
+        # 去重并保持顺序
+        dedup_channels = []
+        seen = set()
+        for channel in self.channels:
+            if channel not in seen:
+                seen.add(channel)
+                dedup_channels.append(channel)
+
+        self.channels = dedup_channels
+        self.channel_set = set(self.channels)
     
     def get_channel_name_mapping(self) -> dict:
         """获取通道名映射字典
@@ -382,7 +486,15 @@ class DataSourceManager:
         Returns:
             显示用的通道名（如果有映射则返回新名，否则返回原名）
         """
-        return self.channel_name_mapping.get(original_name, original_name)
+        current_name = original_name
+        visited = set()
+
+        # 解析链式映射，直到收敛到最终显示名。
+        while current_name in self.channel_name_mapping and current_name not in visited:
+            visited.add(current_name)
+            current_name = self.channel_name_mapping[current_name]
+
+        return current_name
 
 
 # 便捷函数：创建UDP数据源并连接
