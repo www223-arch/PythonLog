@@ -56,10 +56,13 @@ class WaveformWidget(QWidget):
         # 数据源管理器引用
         self.data_source_manager = None
         
+        # 数据更新标志
+        self.data_updated = False  # 标记数据是否已更新
+        
         # 更新定时器
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_display)
-        self.update_interval = 5  # 更新间隔（毫秒）
+        self.update_interval = 20  # 更新间隔（毫秒），从5ms改为20ms，减少重绘频率
     
     def init_ui(self):
         """初始化UI"""
@@ -277,6 +280,9 @@ class WaveformWidget(QWidget):
         for name, value in data_dict.items():
             if name in self.channels:
                 self.update_channel(name, current_time, value)
+        
+        # 标记数据已更新
+        self.data_updated = True
     
     def update_display(self) -> None:
         """更新显示
@@ -286,9 +292,16 @@ class WaveformWidget(QWidget):
         if self.is_paused:
             return
         
+        # 只在数据更新时才重绘
+        if not self.data_updated:
+            return
+        
         for name, channel in self.channels.items():
             if channel['x_data'] and channel['data']:
                 channel['curve'].setData(channel['x_data'], channel['data'])
+        
+        # 重置数据更新标志
+        self.data_updated = False
     
     def start_update(self) -> None:
         """启动定时更新"""
@@ -405,8 +418,14 @@ class WaveformWidget(QWidget):
             
             if not channel['x_data'] or not channel['data']:
                 continue
-            
-            for px, py in zip(channel['x_data'], channel['data']):
+
+            # 鼠标悬停只用于提示，抽样扫描可大幅降低CPU开销
+            point_count = len(channel['x_data'])
+            step = max(1, point_count // 200)
+
+            for idx in range(0, point_count, step):
+                px = channel['x_data'][idx]
+                py = channel['data'][idx]
                 distance = ((px - x) ** 2 + (py - y) ** 2) ** 0.5
                 if distance < min_distance:
                     min_distance = distance
