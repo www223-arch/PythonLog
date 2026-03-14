@@ -357,8 +357,52 @@ class DataSourceManager:
             old_name: 原始通道名
             new_name: 新通道名
         """
+        old_name = old_name.strip()
+        new_name = new_name.strip()
+
+        if not old_name or not new_name:
+            return
+
+        if old_name == new_name:
+            return
+
+        # 将所有当前映射到old_name的键统一更新为new_name，支持多次重命名。
+        # 例如: channel1->111 后再 111->222，则 channel1 也应直接映射到 222。
+        alias_keys = [
+            key for key, mapped_name in self.channel_name_mapping.items()
+            if mapped_name == old_name
+        ]
+
+        if not alias_keys:
+            alias_keys = [old_name]
+
+        for key in alias_keys:
+            self.channel_name_mapping[key] = new_name
+
+        # 记录显示名别名，吸收重命名瞬间队列中在途的旧显示名数据包。
         self.channel_name_mapping[old_name] = new_name
+
+        # 同步更新缓存中的通道列表与集合
+        self._replace_channel_in_cache(old_name, new_name)
+
         print(f"通道名映射已设置: {old_name} -> {new_name}")
+
+    def _replace_channel_in_cache(self, old_name: str, new_name: str) -> None:
+        """同步替换通道缓存中的名称并保持唯一性"""
+        if old_name in self.channels:
+            idx = self.channels.index(old_name)
+            self.channels[idx] = new_name
+
+        # 去重并保持顺序
+        dedup_channels = []
+        seen = set()
+        for channel in self.channels:
+            if channel not in seen:
+                seen.add(channel)
+                dedup_channels.append(channel)
+
+        self.channels = dedup_channels
+        self.channel_set = set(self.channels)
     
     def get_channel_name_mapping(self) -> dict:
         """获取通道名映射字典
@@ -382,7 +426,15 @@ class DataSourceManager:
         Returns:
             显示用的通道名（如果有映射则返回新名，否则返回原名）
         """
-        return self.channel_name_mapping.get(original_name, original_name)
+        current_name = original_name
+        visited = set()
+
+        # 解析链式映射，直到收敛到最终显示名。
+        while current_name in self.channel_name_mapping and current_name not in visited:
+            visited.add(current_name)
+            current_name = self.channel_name_mapping[current_name]
+
+        return current_name
 
 
 # 便捷函数：创建UDP数据源并连接

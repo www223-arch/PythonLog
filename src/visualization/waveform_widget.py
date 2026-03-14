@@ -657,6 +657,22 @@ class WaveformWidget(QWidget):
                 freq_curve.setPen(freq_pen)
             
             print(f"通道 '{name}' 颜色已更新为: {color}")
+
+    def _debug_legend_labels(self) -> list:
+        """调试：获取当前图例标签文本"""
+        labels = []
+        legend = self.plot_widget.plotItem.legend
+        if legend is None:
+            return labels
+        try:
+            for _, label_item in legend.items:
+                try:
+                    labels.append(label_item.text)
+                except Exception:
+                    labels.append(str(label_item))
+        except Exception:
+            pass
+        return labels
     
     def rename_channel(self, old_name: str, new_name: str) -> None:
         """重命名通道
@@ -669,28 +685,44 @@ class WaveformWidget(QWidget):
             print(f"通道 '{old_name}' 不存在")
             return
 
+        new_name = new_name.strip()
+
+        if not new_name:
+            print("新通道名不能为空")
+            return
+
         if new_name in self.channels:
             print(f"通道 '{new_name}' 已存在")
             return
-
-        if not new_name.strip():
-            print("新通道名不能为空")
-            return
         
-        # 更新channels字典
+        # 重建曲线，确保图例中的名称同步更新
         channel_info = self.channels[old_name]
+        old_curve = channel_info['curve']
+        x_data = channel_info['x_data']
+        y_data = channel_info['data']
+        color = channel_info['color']
+        width = channel_info['width']
+
+        # 显式清理图例中的旧条目，避免重命名后残留旧通道标签
+        legend = self.plot_widget.plotItem.legend
+        if legend is not None:
+            try:
+                legend.removeItem(old_name)
+            except Exception:
+                pass
+            try:
+                legend.removeItem(new_name)
+            except Exception:
+                pass
+
+        self.plot_widget.removeItem(old_curve)
+
+        pen = pg.mkPen(color=color, width=width)
+        new_curve = self.plot_widget.plot(x_data, y_data, pen=pen, name=new_name)
+        channel_info['curve'] = new_curve
+
         self.channels[new_name] = channel_info
         del self.channels[old_name]
-
-        # 更新曲线名称
-        curve = self.channels[new_name]['curve']
-        # 方法1：直接设置name属性
-        curve.opts['name'] = new_name
-        # 方法2：重新设置数据以更新图例
-        if curve.xData is not None and curve.yData is not None:
-            curve.setData(curve.xData, curve.yData, name=new_name)
-        else:
-            curve.setData(name=new_name)
 
         # 更新通道选择下拉框
         combo_index = self.channel_combo.findText(old_name)
@@ -708,6 +740,10 @@ class WaveformWidget(QWidget):
             self.freq_curves[new_name] = self.freq_curves[old_name]
             del self.freq_curves[old_name]
         
+        print(f"[DEBUG][waveform_rename] channels={list(self.channels.keys())}")
+        print(f"[DEBUG][waveform_rename] combo_items={[self.channel_combo.itemText(i) for i in range(self.channel_combo.count())]}")
+        print(f"[DEBUG][waveform_rename] legend_labels={self._debug_legend_labels()}")
+
         print(f"通道 '{old_name}' 已重命名为 '{new_name}'")
     
     def get_channel_data(self, name: str) -> Optional[Tuple[List[float], List[float]]]:

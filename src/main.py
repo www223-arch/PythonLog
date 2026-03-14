@@ -1078,6 +1078,25 @@ class MainWindow(QMainWindow):
     def _on_raw_data_toggle(self, checked: bool):
         """原始数据显示开关"""
         self.raw_data_enabled = checked
+
+    def _debug_channel_state(self, tag: str, incoming_keys=None):
+        """打印重命名与自动建通道相关调试信息"""
+        waveform_channels = list(self.waveform_widget.channels.keys())
+        manager_channels = self.data_source_manager.get_channels()
+        mapping = self.data_source_manager.get_channel_name_mapping()
+        self.log_print(f"[DEBUG][{tag}] waveform_channels={waveform_channels}")
+        self.log_print(f"[DEBUG][{tag}] manager_channels={manager_channels}")
+        self.log_print(f"[DEBUG][{tag}] mapping={mapping}")
+        if incoming_keys is not None:
+            self.log_print(f"[DEBUG][{tag}] incoming_keys={list(incoming_keys)}")
+
+    def _normalize_waveform_data_keys(self, waveform_data):
+        """将数据键统一映射为当前显示通道名，避免重命名后旧键回流导致重复建通道。"""
+        normalized = {}
+        for channel_name, value in waveform_data.items():
+            display_name = self.data_source_manager.get_display_channel_name(channel_name)
+            normalized[display_name] = value
+        return normalized
     
     def toggle_connection(self):
         """切换连接/断开状态"""
@@ -1587,11 +1606,19 @@ class MainWindow(QMainWindow):
                     if k not in ('header', 'timestamp', 'format_error')
                 }
                 if waveform_data:
+                    waveform_data = self._normalize_waveform_data_keys(waveform_data)
+
+                    if self.log_enabled:
+                        self._debug_channel_state("before_auto_create", incoming_keys=waveform_data.keys())
+
                     # 自动创建新通道
                     for channel_name in waveform_data.keys():
                         if channel_name not in self.waveform_widget.channels:
+                            self.log_print(f"[DEBUG][auto_create] missing_channel={channel_name}")
                             color = self.channel_colors[len(self.waveform_widget.channels) % len(self.channel_colors)]
                             self.waveform_widget.add_channel(channel_name, color, 2)
+                            if self.log_enabled:
+                                self._debug_channel_state("after_auto_create", incoming_keys=waveform_data.keys())
 
                     timestamp = data_dict.get('timestamp', 0.0)
                     self.waveform_widget.update_channels(waveform_data, timestamp)
@@ -1736,6 +1763,7 @@ class MainWindow(QMainWindow):
         self.log_print(f"[rename_channel] waveform_widget.channels: {list(self.waveform_widget.channels.keys())}")
         self.log_print(f"[rename_channel] data_source_manager.channels: {self.data_source_manager.channels}")
         self.log_print(f"[rename_channel] data_source_manager.channel_name_mapping: {self.data_source_manager.get_channel_name_mapping()}")
+        self._debug_channel_state("rename_start")
         
         if old_name not in self.waveform_widget.channels:
             QMessageBox.warning(self, "错误", f"通道 '{old_name}' 不存在")
@@ -1745,9 +1773,15 @@ class MainWindow(QMainWindow):
         new_name, ok = QInputDialog.getText(self, "重命名通道", f"请输入通道 '{old_name}' 的新名称:")
         
         if ok and new_name:
+            new_name = new_name.strip()
+
             # 检查新名称是否为空
-            if not new_name.strip():
+            if not new_name:
                 QMessageBox.warning(self, "错误", "通道名称不能为空")
+                return
+
+            if new_name in self.waveform_widget.channels:
+                QMessageBox.warning(self, "错误", f"通道 '{new_name}' 已存在")
                 return
             
             self.log_print(f"[rename_channel] 用户输入新名称: {new_name}")
@@ -1755,16 +1789,12 @@ class MainWindow(QMainWindow):
             # 更新waveform_widget中的通道名
             self.waveform_widget.rename_channel(old_name, new_name)
             self.log_print(f"[rename_channel] waveform_widget.rename_channel 完成")
+            self._debug_channel_state("rename_after_waveform")
             
             # 更新data_source_manager中的通道名映射
             self.data_source_manager.set_channel_name_mapping(old_name, new_name)
             self.log_print(f"[rename_channel] data_source_manager.set_channel_name_mapping 完成")
-            
-            # 更新data_source_manager中的通道列表（移除旧名称，添加新名称）
-            if old_name in self.data_source_manager.channels:
-                self.data_source_manager.channels.remove(old_name)
-                self.data_source_manager.channels.append(new_name)
-                self.log_print(f"[rename_channel] data_source_manager.channels 更新后: {self.data_source_manager.channels}")
+            self._debug_channel_state("rename_after_manager")
             
             # 更新通道显示
             channels_text = ", ".join(self.data_source_manager.get_channels())
