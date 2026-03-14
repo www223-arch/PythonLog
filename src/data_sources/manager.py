@@ -23,6 +23,7 @@ class DataSourceManager:
         self.max_buffer_size = 1000
         self.data_saver = DataSaver()
         self.channels = []
+        self.channel_set = set()
         self.channel_data = {}  # 存储各通道的数据
         self.timestamps = []  # 存储时间戳
         self.data_header = 'DATA'  # 数据校验头，默认'DATA'
@@ -53,6 +54,7 @@ class DataSourceManager:
             if success:
                 self.data_buffer.clear()
                 self.channels.clear()
+                self.channel_set.clear()
                 self.channel_data.clear()
                 self.timestamps.clear()
                 self.channel_name_mapping.clear()  # 清空通道名映射
@@ -139,8 +141,9 @@ class DataSourceManager:
                     
                     # 自动添加新通道（使用映射后的名称）
                     # 检查：映射后的通道名是否已存在，或者原始通道名是否已存在
-                    if display_channel_name not in self.channels and original_channel_name not in self.channels:
+                    if display_channel_name not in self.channel_set and original_channel_name not in self.channel_set:
                         self.channels.append(display_channel_name)
+                        self.channel_set.add(display_channel_name)
                         if self.log_enabled:
                             print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
             else:
@@ -153,8 +156,9 @@ class DataSourceManager:
                     
                     # 自动添加新通道（使用映射后的名称）
                     # 检查：映射后的通道名是否已存在，或者原始通道名是否已存在
-                    if display_channel_name not in self.channels and original_channel_name not in self.channels:
+                    if display_channel_name not in self.channel_set and original_channel_name not in self.channel_set:
                         self.channels.append(display_channel_name)
+                        self.channel_set.add(display_channel_name)
                         if self.log_enabled:
                             print(f"[read_data] 检测到新通道: {display_channel_name} (原始名: {original_channel_name})")
             
@@ -197,6 +201,7 @@ class DataSourceManager:
         
         # 清空通道
         self.channels.clear()
+        self.channel_set.clear()
         self.channel_data.clear()
         self.timestamps.clear()
         # 清空通道名映射
