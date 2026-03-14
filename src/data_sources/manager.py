@@ -77,8 +77,32 @@ class DataSourceManager:
             header = str(data[0])
             timestamp = float(data[1])
             
-            # 验证数据校验头
-            if self.header_enabled and header != self.data_header:
+            # 更新最后接收数据的时间（包括校验头不匹配的数据）
+            self.last_data_time = timestamp
+            
+            # 检查是否是Rawdata模式
+            if hasattr(self.current_source, 'get_protocol'):
+                protocol = self.current_source.get_protocol()
+                if protocol == 'rawdata':
+                    # Rawdata模式，直接返回数据，不进行任何校验
+                    data_dict = {'header': header, 'timestamp': timestamp}
+                    return data_dict
+            
+            # 检查是否是数据格式错误标识（先检查这个）
+            if header == 'FORMAT_ERROR':
+                self.header_mismatch_count += 1
+                print(f"[警告] 数据格式不匹配 - 丢弃数据")
+                # 返回特殊标识，表示有格式错误
+                return {'format_error': True, 'header': header, 'timestamp': timestamp}
+            
+            # 检查是否有通道数据（Rawdata模式可能没有）
+            if len(data) < 3:
+                # 没有通道数据，返回空数据字典以更新状态
+                data_dict = {'header': header, 'timestamp': timestamp}
+                return data_dict
+            
+            # 验证数据校验头（只在数据校验头不为空时才验证）
+            if self.header_enabled and header != '' and header != self.data_header:
                 self.header_mismatch_count += 1
                 print(f"[警告] 数据校验头不匹配: 期望'{self.data_header}', 收到'{header}' - 丢弃数据")
                 return None

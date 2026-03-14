@@ -77,16 +77,28 @@ class SerialDataSource(DataSource):
                     if self.raw_data_callback:
                         self.raw_data_callback(data)
                     return self._parse_data(data)
-                else:
-                    # 二进制协议：读取所有可用数据
+                elif self.protocol == 'justfloat':
+                    # Justfloat协议：纯浮点数，无数据校验头和时间戳
                     data = self.serial.read(self.serial.in_waiting)
                     # 调用原始数据回调
                     if self.raw_data_callback:
                         self.raw_data_callback(data)
-                    return self._parse_binary_data(data)
+                    return self._parse_justfloat_data(data)
+                else:  # rawdata
+                    # Rawdata协议：原始数据，直接显示
+                    data = self.serial.read(self.serial.in_waiting)
+                    # 调用原始数据回调
+                    if self.raw_data_callback:
+                        self.raw_data_callback(data)
+                    # 返回空数据元组以更新last_data_time
+                    # 格式: (数据校验头, 时间戳)
+                    import time
+                    return ('', time.time())  # Rawdata返回空数据元组
             return None
         except Exception as e:
             print(f"读取串口数据失败: {e}")
+            # 串口断开，更新连接状态
+            self.is_connected = False
             return None
     
     def _parse_data(self, data: bytes) -> Tuple[float, ...]:
@@ -105,7 +117,9 @@ class SerialDataSource(DataSource):
             return self._parse_text_data(text_data)
         except Exception as e:
             print(f"串口数据解析失败: {e}, 原始数据: {data}")
-            return tuple()
+            # 返回错误标识，用于触发数据格式不匹配状态
+            import time
+            return ('FORMAT_ERROR', time.time())
     
     def _parse_binary_data(self, data: bytes) -> Optional[Tuple[float, ...]]:
         """解析二进制数据
@@ -163,6 +177,72 @@ class SerialDataSource(DataSource):
         except Exception as e:
             print(f"二进制数据解析失败: {e}, 原始数据: {data}")
             return None
+    
+    def _parse_justfloat_data(self, data: bytes) -> Optional[Tuple[float, ...]]:
+        """解析Justfloat数据（纯浮点数，无数据校验头和时间戳）
+        
+        Justfloat协议格式：
+        struct Frame {
+            float fdata[CH_COUNT];
+            unsigned char tail[4]{0x00, 0x00, 0x80, 0x7f};
+        };
+        
+        Args:
+            data: 原始字节数据
+        
+        Returns:
+            解析后的数据元组 (数据校验头, 时间戳, 通道1值, 通道2值, ...)
+        """
+        try:
+            # 将新数据添加到缓冲区
+            self.buffer.extend(data)
+            
+            # 查找帧尾标识
+            tail_pos = self.buffer.find(self.frame_tail)
+            
+            if tail_pos == -1:
+                # 没有找到帧尾，继续等待
+                return None
+            
+            # 检查帧长度是否合理
+            # 帧尾位置 + 4字节帧尾 = 总长度
+            frame_length = tail_pos + 4
+            
+            if frame_length < 4:
+                # 帧太短，丢弃
+                self.buffer = self.buffer[frame_length:]
+                return None
+            
+            # 提取帧数据（不包括帧尾）
+            frame_data = self.buffer[:tail_pos]
+            
+            # 清空缓冲区
+            self.buffer = self.buffer[frame_length:]
+            
+            # 解析浮点数数据
+            # 每个浮点数4字节
+            num_floats = len(frame_data) // 4
+            
+            if num_floats == 0:
+                return None
+            
+            # 解析浮点数
+            values = struct.unpack(f'{num_floats}f', frame_data)
+            
+            # 返回数据元组（添加数据校验头和时间戳）
+            # 数据校验头：使用空字符串
+            # 时间戳：使用当前时间
+            import time
+            header = ''
+            timestamp = time.time()
+            result = (header, timestamp) + values
+            
+            return result
+        except Exception as e:
+            print(f"Justfloat数据解析失败: {e}, 原始数据: {data}")
+            # 返回错误标识，用于触发数据格式不匹配状态
+            import time
+            return ('FORMAT_ERROR', time.time())
     
     def _parse_text_data(self, text: str) -> Tuple[float, ...]:
         """解析文本格式数据
@@ -274,4 +354,12 @@ class SerialDataSource(DataSource):
         Args:
             callback: 回调函数，接收原始字节数据
         """
-        self.raw_data_callback = callback"}]}
+        self.raw_data_callback = callback
+    
+    def get_protocol(self) -> str:
+        """获取当前协议类型
+        
+        Returns:
+            协议类型：'text', 'justfloat', 'rawdata'
+        """
+        return self.protocol

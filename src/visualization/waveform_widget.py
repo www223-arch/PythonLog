@@ -636,6 +636,37 @@ class WaveformWidget(QWidget):
             
             print(f"通道 '{name}' 颜色已更新为: {color}")
     
+    def rename_channel(self, old_name: str, new_name: str) -> None:
+        """重命名通道
+        
+        Args:
+            old_name: 原通道名称
+            new_name: 新通道名称
+        """
+        if old_name not in self.channels:
+            print(f"通道 '{old_name}' 不存在")
+            return
+        
+        if new_name in self.channels:
+            print(f"通道 '{new_name}' 已存在")
+            return
+        
+        # 更新channels字典
+        self.channels[new_name] = self.channels[old_name]
+        del self.channels[old_name]
+        
+        # 更新channel_data字典
+        if old_name in self.channel_data:
+            self.channel_data[new_name] = self.channel_data[old_name]
+            del self.channel_data[old_name]
+        
+        # 更新freq_curves字典（如果存在）
+        if old_name in self.freq_curves:
+            self.freq_curves[new_name] = self.freq_curves[old_name]
+            del self.freq_curves[old_name]
+        
+        print(f"通道 '{old_name}' 已重命名为 '{new_name}'")
+    
     def get_channel_data(self, name: str) -> Optional[Tuple[List[float], List[float]]]:
         """获取通道数据
         
