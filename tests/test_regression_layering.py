@@ -10,6 +10,7 @@ if ROOT_DIR not in sys.path:
 
 from src.data_sources.base import DataSource
 from src.data_sources.manager import DataSourceManager
+from src.data_sources.serial_source import SerialDataSource
 
 
 class FakeSource(DataSource):
@@ -38,7 +39,52 @@ class FakeSource(DataSource):
         return list(self._channel_names)
 
 
+class NoProtocolSource(DataSource):
+    """模拟不提供protocol/get_protocol能力的数据源（如UDP场景）。"""
+
+    def connect(self) -> bool:
+        self.is_connected = True
+        return True
+
+    def read_data(self):
+        return None
+
+    def disconnect(self) -> None:
+        self.is_connected = False
+
+
 class ManagerLayeringRegressionTests(unittest.TestCase):
+    def test_get_delta_t_is_safe_for_non_protocol_source(self):
+        manager = DataSourceManager()
+        src = NoProtocolSource()
+        self.assertTrue(manager.set_source(src))
+
+        self.assertIsNone(manager.get_delta_t())
+
+    def test_serial_text_invalid_line_emits_format_error_frame(self):
+        serial_source = SerialDataSource(protocol='text')
+        serial_source._parse_text_buffer_data(b"this is invalid\n")
+
+        self.assertTrue(serial_source.parsed_frames)
+        frame = serial_source.parsed_frames.popleft()
+        self.assertEqual(frame[0], 'FORMAT_ERROR')
+
+    def test_header_mismatch_reports_format_error_frame(self):
+        manager = DataSourceManager()
+        manager.set_data_header('DATA')
+
+        src = FakeSource(
+            protocol='text',
+            packets=[('BAD', 1.0, 1.23)],
+            channel_names=['ch1']
+        )
+        self.assertTrue(manager.set_source(src))
+
+        frame = manager.read_frame()
+        self.assertIsNotNone(frame)
+        self.assertTrue(frame.get('meta', {}).get('format_error'))
+        self.assertGreater(manager.get_header_mismatch_count(), 0)
+
     def test_switch_source_resets_channel_and_mapping_state(self):
         manager = DataSourceManager()
 

@@ -379,34 +379,36 @@ class DataSourceManager:
         Returns:
             Δt值（ms），如果不是Justfloat无时间戳模式，返回None
         """
-        print(f"[get_delta_t] 开始检查...")
-        print(f"[get_delta_t] current_source: {self.current_source}")
-        
-        if self.current_source:
-            print(f"[get_delta_t] current_source.protocol: {self.current_source.protocol}")
-            print(f"[get_delta_t] hasattr(current_source, 'protocol'): {hasattr(self.current_source, 'protocol')}")
-            print(f"[get_delta_t] hasattr(current_source, 'justfloat_mode'): {hasattr(self.current_source, 'justfloat_mode')}")
-            
-            if hasattr(self.current_source, 'protocol'):
-                if self.current_source.protocol == 'justfloat':
-                    print(f"[get_delta_t] protocol == 'justfloat'，检查justfloat_mode...")
-                    if hasattr(self.current_source, 'justfloat_mode'):
-                        print(f"[get_delta_t] justfloat_mode: {self.current_source.justfloat_mode}")
-                        if self.current_source.justfloat_mode == 'without_timestamp':
-                            print(f"[get_delta_t] justfloat_mode == 'without_timestamp'，返回delta_t: {self.current_source.delta_t}")
-                            return self.current_source.delta_t
-                        else:
-                            print(f"[get_delta_t] justfloat_mode不是'without_timestamp'，返回None")
-                    else:
-                        print(f"[get_delta_t] 没有justfloat_mode属性，返回None")
-                else:
-                    print(f"[get_delta_t] protocol不是'justfloat'，返回None")
-            else:
-                print(f"[get_delta_t] 没有protocol属性，返回None")
-        else:
-            print(f"[get_delta_t] current_source为None，返回None")
-        
-        return None
+        source = self.current_source
+        if source is None:
+            return None
+
+        protocol = None
+        if hasattr(source, 'get_protocol'):
+            try:
+                protocol = source.get_protocol()
+            except Exception:
+                return None
+        elif hasattr(source, 'protocol'):
+            protocol = getattr(source, 'protocol', None)
+
+        if protocol != 'justfloat':
+            return None
+
+        if not hasattr(source, 'justfloat_mode'):
+            return None
+
+        if getattr(source, 'justfloat_mode', None) != 'without_timestamp':
+            return None
+
+        delta_t = getattr(source, 'delta_t', None)
+        if delta_t is None:
+            return None
+
+        try:
+            return float(delta_t)
+        except (TypeError, ValueError):
+            return None
     
     def set_channel_name_mapping(self, old_name: str, new_name: str) -> None:
         """设置通道名映射

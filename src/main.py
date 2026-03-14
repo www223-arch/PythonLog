@@ -313,6 +313,7 @@ class StateMachine:
                 'timeout': DataStoppedState,
             },
             ConnectedReceivingState: {
+                'data_received': ConnectedReceivingState,
                 'timeout': DataStoppedState,
                 'format_error': DataFormatMismatchState,
                 'pause': PausedState,
@@ -320,7 +321,7 @@ class StateMachine:
             },
             DataFormatMismatchState: {
                 'data_received': ConnectedReceivingState,
-                'timeout': DataStoppedState,
+                'timeout': ConnectedWaitingState,
                 'format_error': DataFormatMismatchState,
                 'disconnect': DisconnectedState,
             },
@@ -1028,6 +1029,7 @@ class MainWindow(QMainWindow):
         self.auto_save_enabled = False
         self.last_data_time = None  # 记录最后接收数据的时间
         self.data_timeout = 300  # 数据超时时间（毫秒）
+        self.last_justfloat_channel_names = []  # 断开后保留justfloat通道显示名快照
         
         # 将data_source_manager传递给waveform_widget
         self.waveform_widget.data_source_manager = self.data_source_manager
@@ -1268,6 +1270,16 @@ class MainWindow(QMainWindow):
 
         timestamp = data_dict.get('timestamp', 0.0)
         self.waveform_widget.update_channels(waveform_data, timestamp)
+
+    def _sync_receiving_indicator(self):
+        """兜底同步：接收状态必须保持蓝色闪烁。"""
+        if not isinstance(self.state_machine.current_state, ConnectedReceivingState):
+            return
+
+        if not getattr(self.connect_btn, '_is_flashing', False):
+            self.connect_btn.set_color(QColor(100, 149, 237))
+            self.connect_btn.start_flashing(100)
+            self.fsm_debug_print("[UI_DEBUG][sync] receiving_state_detected_but_not_flashing -> force_start_flashing")
     
     def toggle_connection(self):
         """切换连接/断开状态"""
@@ -1279,6 +1291,7 @@ class MainWindow(QMainWindow):
     def _disconnect_flow(self):
         """连接编排层：统一处理断开流程（不改业务语义）"""
         self._debug_ui_state_snapshot("before_disconnect_flow", event="disconnect")
+        self._snapshot_justfloat_channel_names_before_disconnect()
         # 先停止数据接收线程，避免访问已断开的数据源
         self.stop_receive_thread()
         # 再断开数据源连接
@@ -1304,6 +1317,60 @@ class MainWindow(QMainWindow):
         self.last_data_time = None
         self.log_print("数据源已断开")
         self._debug_ui_state_snapshot("after_disconnect_flow", event="disconnect")
+
+    def _snapshot_justfloat_channel_names_before_disconnect(self):
+        """断开前保存justfloat通道显示名，用于下次重连恢复。"""
+        source = self.data_source_manager.get_current_source()
+        if source is None or not hasattr(source, 'get_protocol'):
+            return
+
+        if source.get_protocol() != 'justfloat':
+            return
+
+        current_count = len(self.waveform_widget.channels)
+        if current_count <= 0:
+            self.last_justfloat_channel_names = []
+            return
+
+        saved_names = []
+        for i in range(1, current_count + 1):
+            default_name = f'channel{i}'
+            saved_names.append(self.data_source_manager.get_display_channel_name(default_name))
+
+        self.last_justfloat_channel_names = saved_names
+        self.fsm_debug_print(
+            f"[UI_DEBUG][justfloat_snapshot] count={current_count} names={self.last_justfloat_channel_names}"
+        )
+
+    def _restore_justfloat_channel_names_after_connect(self):
+        """justfloat重连后恢复上次通道显示名映射。
+
+        规则：
+        - 只恢复已有快照中的前N个通道（N由新连接数据决定）。
+        - 新增通道使用默认名（channel{n}）。
+        - 若新连接通道变少，多余历史名称自然不会生效。
+        """
+        if not self.last_justfloat_channel_names:
+            return
+
+        used_names = set()
+        restored = []
+
+        for index, saved_name in enumerate(self.last_justfloat_channel_names, start=1):
+            default_name = f'channel{index}'
+            if not saved_name or saved_name == default_name:
+                continue
+
+            # 避免异常情况下的重名恢复
+            if saved_name in used_names:
+                continue
+
+            self.data_source_manager.set_channel_name_mapping(default_name, saved_name)
+            used_names.add(saved_name)
+            restored.append((default_name, saved_name))
+
+        if restored:
+            self.fsm_debug_print(f"[UI_DEBUG][justfloat_restore] mappings={restored}")
 
     def _build_data_source_from_ui(self, source_type: str, header: str):
         """应用编排层：根据UI配置创建数据源并返回连接日志。"""
@@ -1365,6 +1432,10 @@ class MainWindow(QMainWindow):
             # 如果是Justfloat无时间戳模式，重置数据点计数器
             if success and justfloat_mode == 'without_timestamp':
                 data_source.reset_data_point_counter()
+
+            # justfloat重连后恢复历史通道名映射
+            if success and hasattr(data_source, 'get_protocol') and data_source.get_protocol() == 'justfloat':
+                self._restore_justfloat_channel_names_after_connect()
 
             if success:
                 self.log_print(success_log)
@@ -1776,8 +1847,8 @@ class MainWindow(QMainWindow):
                 
                 self.data_count += 1
                 
-                # 使用发送端时间戳更新最后接收时间，减少系统时钟调用
-                self.last_data_time = int(data_dict.get('timestamp', QDateTime.currentMSecsSinceEpoch()))
+                # 超时检测使用本机接收时刻，避免发送端相对时间戳导致误判超时
+                self.last_data_time = QDateTime.currentMSecsSinceEpoch()
 
                 self._update_waveform_from_packet(data_dict)
                 
@@ -1800,6 +1871,9 @@ class MainWindow(QMainWindow):
         elif has_valid_data and not self.waveform_widget.is_paused:
             self.fsm_debug_print("[UI_DEBUG][update_data] data_received_detected")
             self.state_machine.handle_event('data_received')
+
+        # 状态驱动后的UI兜底同步，避免出现“文字已接收但按钮不闪烁”。
+        self._sync_receiving_indicator()
 
         # 限频更新文本UI，避免高频setText导致主线程卡顿
         if processed_count > 0:
