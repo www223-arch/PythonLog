@@ -15,7 +15,7 @@ import argparse
 class UDPSender:
     """UDP数据发送器"""
     
-    def __init__(self, host: str = '127.0.0.1', port: int = 8888):
+    def __init__(self, host: str = '127.0.0.1', port: int = 8888, dump_log_path: str = ''):
         """初始化UDP发送器
         
         Args:
@@ -26,6 +26,11 @@ class UDPSender:
         self.port = port
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.is_running = False
+        self.dump_log_path = dump_log_path
+        self._dump_fp = None
+
+        if self.dump_log_path:
+            self._dump_fp = open(self.dump_log_path, 'a', encoding='utf-8')
     
     def send_data(self, timestamp: float, channel_data: dict, header: str = 'DATA') -> None:
         """发送数据
@@ -43,6 +48,10 @@ class UDPSender:
         text_data = ",".join(parts)
         data = text_data.encode('utf-8')
         self.socket.sendto(data, (self.host, self.port))
+
+        if self._dump_fp:
+            self._dump_fp.write(text_data + '\n')
+            self._dump_fp.flush()
     
     def send_sine_wave(self, channels: int = 3, frequency: float = 1.0, 
                        amplitude: float = 1.0, duration: float = 10.0, 
@@ -59,7 +68,7 @@ class UDPSender:
         """
         self.is_running = True
         start_time = time.time()
-        sample_rate = 2000
+        sample_rate = 5000
           # 采样率
         
         # 使用自定义通道名称，如果没有则使用默认
@@ -106,6 +115,9 @@ class UDPSender:
         finally:
             self.is_running = False
             self.socket.close()
+            if self._dump_fp:
+                self._dump_fp.close()
+                self._dump_fp = None
             print("UDP发送器已关闭")
     
     def send_random_data(self, channels: int = 3, duration: float = 10.0, 
@@ -164,6 +176,9 @@ class UDPSender:
         finally:
             self.is_running = False
             self.socket.close()
+            if self._dump_fp:
+                self._dump_fp.close()
+                self._dump_fp = None
             print("UDP发送器已关闭")
     
     def stop(self):
@@ -194,11 +209,13 @@ def main():
                        help='自定义通道名称，用空格分隔 (例如: --names 电压 电流 温度)')
     parser.add_argument('--header', type=str, default='DATA',
                        help='数据校验头 (默认: DATA)')
+    parser.add_argument('--dump-log', type=str, default='',
+                       help='可选：同步追加写入日志文件（用于文件源实时联调）')
     
     args = parser.parse_args()
     
     # 创建发送器
-    sender = UDPSender(args.host, args.port)
+    sender = UDPSender(args.host, args.port, args.dump_log)
     
     # 发送数据
     if args.type == 'sine':

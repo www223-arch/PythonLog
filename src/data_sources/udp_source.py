@@ -31,6 +31,9 @@ class UDPDataSource(DataSource):
         self.data_format = 'f'  # 默认浮点数格式
         self.last_raw_text = None  # 存储原始文本，用于提取通道名称
         self.raw_data_callback = None  # 原始数据回调函数
+        self.last_sender_addr = None  # 最近一次接收端点
+        self.send_target_host = '127.0.0.1'
+        self.send_target_port = port
     
     def connect(self) -> bool:
         """连接UDP数据源
@@ -61,6 +64,7 @@ class UDPDataSource(DataSource):
         
         try:
             data, addr = self.socket.recvfrom(self.buffer_size)
+            self.last_sender_addr = addr
             # 调用原始数据回调
             if self.raw_data_callback:
                 self.raw_data_callback(data)
@@ -213,3 +217,29 @@ class UDPDataSource(DataSource):
             callback: 回调函数，接收原始字节数据
         """
         self.raw_data_callback = callback
+
+    def set_send_target(self, host: str, port: int) -> None:
+        """设置UDP发送目标地址。"""
+        self.send_target_host = host
+        self.send_target_port = int(port)
+
+    def send_data(self, data: bytes) -> bool:
+        """通过UDP发送数据。"""
+        if not self.is_connected or not self.socket:
+            return False
+
+        try:
+            target = None
+            if self.send_target_host and self.send_target_port > 0:
+                target = (self.send_target_host, self.send_target_port)
+            elif self.last_sender_addr is not None:
+                target = self.last_sender_addr
+
+            if target is None:
+                return False
+
+            self.socket.sendto(data, target)
+            return True
+        except Exception as e:
+            print(f"UDP发送失败: {e}")
+            return False
