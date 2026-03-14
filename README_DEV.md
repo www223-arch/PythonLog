@@ -2,6 +2,15 @@
 
 本文档面向开发者，目标是防止“新增串口功能后影响 UDP”这类回归，并指导后续扩展。
 
+## 文档导航
+
+- 详细开发指南（推荐先读）：[docs/developer_guide.md](docs/developer_guide.md)
+- 学习路径（面向新人）：[docs/learning_guide.md](docs/learning_guide.md)
+
+说明：
+- 本文档强调架构约束与回归风险。
+- `docs/developer_guide.md` 提供更完整的“新增功能/调试/规范/清单”执行手册。
+
 ## 结论先行
 
 你的分层思路本身是对的，但当前代码中存在边界泄漏，导致跨数据源回归风险：

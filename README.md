@@ -6,6 +6,7 @@
 
 - 本文档面向使用者，关注安装、配置和操作。
 - 开发与架构文档请查看 [README_DEV.md](README_DEV.md)。
+- 详细开发指南请查看 [docs/developer_guide.md](docs/developer_guide.md)。
 
 ## 功能总览
 
