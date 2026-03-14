@@ -54,6 +54,14 @@ class State:
         """
         pass
 
+    def log_print(self, *args, **kwargs) -> None:
+        """统一日志输出，委托给主窗口"""
+        context = self.state_machine.context
+        if hasattr(context, 'log_print'):
+            context.log_print(*args, **kwargs)
+        else:
+            print(*args, **kwargs)
+
 
 class DisconnectedState(State):
     """未连接状态"""
@@ -66,7 +74,7 @@ class DisconnectedState(State):
         context.connect_btn.stop_flashing()
         context.data_status_label.setText("数据状态: 无数据")
         context.data_status_label.setStyleSheet("color: #666;")
-        print(f"[状态] 进入未连接状态")
+        self.log_print(f"[状态] 进入未连接状态")
     
     def handle_event(self, event: str, **kwargs) -> None:
         """处理事件"""
@@ -85,7 +93,7 @@ class ConnectedWaitingState(State):
         context.connect_btn.stop_flashing()
         context.data_status_label.setText("数据状态: 等待数据")
         context.data_status_label.setStyleSheet("color: #666;")
-        print(f"[状态] 进入等待数据状态")
+        self.log_print(f"[状态] 进入等待数据状态")
     
     def handle_event(self, event: str, **kwargs) -> None:
         """处理事件"""
@@ -108,7 +116,7 @@ class ConnectedReceivingState(State):
         context.connect_btn.start_flashing(100)  # 100ms闪烁
         context.data_status_label.setText("数据状态: 正常接收")
         context.data_status_label.setStyleSheet("color: green;")
-        print(f"[状态] 进入接收数据状态")
+        self.log_print(f"[状态] 进入接收数据状态")
     
     def handle_event(self, event: str, **kwargs) -> None:
         """处理事件"""
@@ -137,7 +145,7 @@ class DataFormatMismatchState(State):
         context.connect_btn.start_flashing(500)  # 500ms闪烁
         context.data_status_label.setText(f"数据状态: 数据格式不匹配 ({self.mismatch_count}次)")
         context.data_status_label.setStyleSheet("color: red;")
-        print(f"[状态] 进入数据格式不匹配状态，次数: {self.mismatch_count}")
+        self.log_print(f"[状态] 进入数据格式不匹配状态，次数: {self.mismatch_count}")
     
     def handle_event(self, event: str, **kwargs) -> None:
         """处理事件"""
@@ -151,7 +159,7 @@ class DataFormatMismatchState(State):
             # 更新UI
             context = self.state_machine.context
             context.data_status_label.setText(f"数据状态: 数据格式不匹配 ({self.mismatch_count}次)")
-            print(f"[状态] 更新数据格式不匹配次数: {self.mismatch_count}")
+            self.log_print(f"[状态] 更新数据格式不匹配次数: {self.mismatch_count}")
         elif event == 'disconnect':
             self.state_machine.transition_to(DisconnectedState(self.state_machine))
 
@@ -167,7 +175,7 @@ class DataStoppedState(State):
         context.connect_btn.stop_flashing()
         context.data_status_label.setText("数据状态: 数据停止")
         context.data_status_label.setStyleSheet("color: #666;")
-        print(f"[状态] 进入数据停止状态")
+        self.log_print(f"[状态] 进入数据停止状态")
     
     def handle_event(self, event: str, **kwargs) -> None:
         """处理事件"""
@@ -190,7 +198,7 @@ class PausedState(State):
         context.connect_btn.stop_flashing()
         context.data_status_label.setText("数据状态: 已暂停")
         context.data_status_label.setStyleSheet("color: #666;")
-        print(f"[状态] 进入暂停状态")
+        self.log_print(f"[状态] 进入暂停状态")
     
     def handle_event(self, event: str, **kwargs) -> None:
         """处理事件"""
@@ -216,10 +224,10 @@ class StateMachine:
             new_state: 新状态
         """
         if self.current_state:
-            print(f"[状态机] 退出状态: {self.current_state.__class__.__name__}")
+            self.log_print(f"[状态机] 退出状态: {self.current_state.__class__.__name__}")
             self.current_state.exit()
         
-        print(f"[状态机] 进入状态: {new_state.__class__.__name__}")
+        self.log_print(f"[状态机] 进入状态: {new_state.__class__.__name__}")
         self.current_state = new_state
         self.current_state.enter()
     
@@ -230,9 +238,15 @@ class StateMachine:
             event: 事件名称
             **kwargs: 事件参数
         """
-        print(f"[状态机] 处理事件: {event}, 参数: {kwargs}")
         if self.current_state:
             self.current_state.handle_event(event, **kwargs)
+
+    def log_print(self, *args, **kwargs) -> None:
+        """统一日志输出，委托给主窗口"""
+        if hasattr(self.context, 'log_print'):
+            self.context.log_print(*args, **kwargs)
+        else:
+            print(*args, **kwargs)
     
     def get_current_state_name(self) -> str:
         """获取当前状态名称
@@ -336,7 +350,7 @@ class ConnectionStateManager:
             new_state: 新状态
             **kwargs: 额外参数（如数据格式不匹配次数）
         """
-        print(f"[状态转换] 当前状态: {self.current_state}, 新状态: {new_state}")
+        self.log_print(f"[状态转换] 当前状态: {self.current_state}, 新状态: {new_state}")
         if new_state == self.current_state:
             # 状态相同，只更新动态内容
             self._update_dynamic_content(new_state, **kwargs)
@@ -346,7 +360,7 @@ class ConnectionStateManager:
         self.current_state = new_state
         config = self.state_config[new_state]
         
-        print(f"[状态转换] 执行状态转换: {new_state}")
+        self.log_print(f"[状态转换] 执行状态转换: {new_state}")
         
         # 更新按钮
         self.connect_btn.set_color(config['button_color'])
@@ -491,9 +505,16 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        # 提前初始化日志开关，确保init_ui阶段可安全调用log_print
+        self.log_enabled = False  # 默认关闭日志
         self.init_ui()
         self.init_components()
         self.init_connections()
+
+    def log_print(self, *args, **kwargs) -> None:
+        """统一日志输出接口"""
+        if self.log_enabled:
+            print(*args, **kwargs)
     
     def init_ui(self):
         """初始化UI"""
@@ -799,10 +820,19 @@ class MainWindow(QMainWindow):
         self.data_count = 0
         self.auto_save_enabled = False
         self.last_data_time = None  # 记录最后接收数据的时间
-        self.data_timeout = 1000  # 数据超时时间（毫秒）
+        self.data_timeout = 300  # 数据超时时间（毫秒）
         
         # 将data_source_manager传递给waveform_widget
         self.waveform_widget.data_source_manager = self.data_source_manager
+        
+        # 原始数据缓冲区（用于优化打印速度）
+        self.raw_data_buffer = []
+        self.raw_data_update_interval = 100  # UI更新间隔（毫秒）
+        self.raw_data_update_timer = QTimer()
+        self.raw_data_update_timer.timeout.connect(self.flush_raw_data_buffer)
+        self.raw_data_update_timer.start(self.raw_data_update_interval)
+        
+        # 日志开关已在__init__中初始化
         
         # 初始化状态机
         self.state_machine = StateMachine(self)
@@ -810,7 +840,7 @@ class MainWindow(QMainWindow):
         # 定义断开回调函数
         def on_disconnect():
             """数据源断开回调"""
-            print("[断开回调] 数据源已断开")
+            self.log_print("[断开回调] 数据源已断开")
             # 更新UI状态
             self.status_label.setText("未连接")
             self.status_label.setStyleSheet("color: red;")
@@ -877,7 +907,7 @@ class MainWindow(QMainWindow):
             self.state_machine.handle_event('disconnect')
             # 重置last_data_time，避免check_data_timeout继续检测超时
             self.last_data_time = None
-            print("数据源已断开")
+            self.log_print("数据源已断开")
         else:
             # 连接
             try:
@@ -899,7 +929,7 @@ class MainWindow(QMainWindow):
                     success = self.data_source_manager.set_source(data_source)
                     
                     if success:
-                        print(f"已连接到UDP {host}:{port}，数据校验头: {header}")
+                        self.log_print(f"已连接到UDP {host}:{port}，数据校验头: {header}")
                 else:
                     # 串口数据源
                     from data_sources.manager import create_serial_source
@@ -940,9 +970,9 @@ class MainWindow(QMainWindow):
                     
                     if success:
                         if protocol == 'text':
-                            print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {serial_header}")
+                            self.log_print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}，数据校验头: {serial_header}")
                         else:
-                            print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}")
+                            self.log_print(f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol_text}")
                 
                 if success:
                     self.status_label.setText("已连接")
@@ -1010,21 +1040,21 @@ class MainWindow(QMainWindow):
                 for port in ports:
                     port_info = f"{port.device} - {port.description}"
                     self.serial_port_combo.addItem(port_info, port.device)
-                print(f"扫描到 {len(ports)} 个串口")
+                self.log_print(f"扫描到 {len(ports)} 个串口")
             else:
                 # 没有找到串口
                 self.serial_port_combo.addItem("无可用串口", "")
-                print("未扫描到可用串口")
+                self.log_print("未扫描到可用串口")
         except ImportError:
             # pyserial未安装
             self.serial_port_combo.clear()
             self.serial_port_combo.addItem("请安装pyserial库", "")
-            print("错误: 未安装pyserial库，请运行: pip install pyserial")
+            self.log_print("错误: 未安装pyserial库，请运行: pip install pyserial")
         except Exception as e:
             # 扫描失败
             self.serial_port_combo.clear()
             self.serial_port_combo.addItem("扫描失败", "")
-            print(f"扫描串口失败: {e}")
+            self.log_print(f"扫描串口失败: {e}")
     
     def refresh_serial_ports_and_show_popup(self):
         """刷新串口列表并显示下拉框"""
@@ -1077,7 +1107,7 @@ class MainWindow(QMainWindow):
         try:
             # 尝试解析Δt
             delta_t = float(delta_t_text) if delta_t_text else 1.0
-            print(f"[on_delta_t_changed] Δt已改变为: {delta_t} ms")
+            self.log_print(f"[on_delta_t_changed] Δt已改变为: {delta_t} ms")
             
             # 如果当前已连接且是Justfloat无时间戳模式，重置数据点计数器
             if self.data_source_manager.is_connected():
@@ -1089,9 +1119,9 @@ class MainWindow(QMainWindow):
                             # 更新Δt并重置计数器
                             current_source.delta_t = delta_t
                             current_source.reset_data_point_counter()
-                            print(f"[on_delta_t_changed] 已重置数据点计数器")
+                            self.log_print(f"[on_delta_t_changed] 已重置数据点计数器")
         except ValueError:
-            print(f"[on_delta_t_changed] 无效的Δt值: {delta_t_text}")
+            self.log_print(f"[on_delta_t_changed] 无效的Δt值: {delta_t_text}")
     
     def browse_save_path(self):
         """浏览保存路径"""
@@ -1143,19 +1173,34 @@ class MainWindow(QMainWindow):
                 # 文本格式显示
                 try:
                     text = data.decode(encoding)
-                    self.raw_data_text.append(text)
+                    self.raw_data_buffer.append(text)
                 except UnicodeDecodeError:
                     # 解码失败，检查是否是二进制数据
                     if self._is_binary_data(data):
                         # 二进制数据，显示提示信息
-                        self.raw_data_text.append("[二进制数据 - 请切换到十六进制格式查看]\n")
+                        self.raw_data_buffer.append("[二进制数据 - 请切换到十六进制格式查看]\n")
                     else:
                         # 非二进制数据，显示错误信息
-                        self.raw_data_text.append(f"[解码失败: {data.hex()}]\n")
+                        self.raw_data_buffer.append(f"[解码失败: {data.hex()}]\n")
             else:
                 # 十六进制格式显示
                 hex_str = data.hex(' ').upper()
-                self.raw_data_text.append(f"{hex_str}\n")
+                self.raw_data_buffer.append(f"{hex_str}\n")
+        except Exception as e:
+            self.log_print(f"显示原始数据失败: {e}")
+    
+    def flush_raw_data_buffer(self):
+        """刷新原始数据缓冲区到UI"""
+        if not self.raw_data_buffer:
+            return
+        
+        try:
+            # 将缓冲区中的所有数据合并
+            all_text = ''.join(self.raw_data_buffer)
+            self.raw_data_buffer.clear()
+            
+            # 一次性添加到UI
+            self.raw_data_text.append(all_text)
             
             # 限制显示行数，避免内存占用过大
             max_lines = 1000
@@ -1170,7 +1215,7 @@ class MainWindow(QMainWindow):
             scrollbar = self.raw_data_text.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
         except Exception as e:
-            print(f"显示原始数据失败: {e}")
+            self.log_print(f"刷新原始数据缓冲区失败: {e}")
     
     def _is_binary_data(self, data: bytes) -> bool:
         """判断数据是否是二进制数据
@@ -1239,14 +1284,14 @@ class MainWindow(QMainWindow):
             self.waveform_widget.is_paused = False
             self.pause_btn.setText("暂停")
             # 触发resume事件
-            print("波形显示已恢复")
+            self.log_print("波形显示已恢复")
             self.state_machine.handle_event('resume')
         else:
             # 暂停
             self.waveform_widget.is_paused = True
             self.pause_btn.setText("继续")
             # 触发pause事件
-            print("波形显示已暂停（数据继续接收和保存）")
+            self.log_print("波形显示已暂停（数据继续接收和保存）")
             self.state_machine.handle_event('pause')
     
     def update_data(self):
@@ -1263,28 +1308,22 @@ class MainWindow(QMainWindow):
                 # 没有更多数据，退出循环
                 break
             
-            print(f"[update_data] 收到数据: {data_dict}")
-            
             # 检查是否是格式错误标识
             if data_dict.get('format_error'):
                 # 格式错误，触发format_error事件
                 header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
-                print(f"[update_data] 格式错误，触发format_error事件，header_mismatch_count: {header_mismatch_count}")
                 self.state_machine.handle_event('format_error', mismatch_count=header_mismatch_count)
                 continue
             
             # 检查数据格式不匹配情况（在读取数据后检查）
             header_mismatch_count = self.data_source_manager.get_header_mismatch_count()
-            print(f"[update_data] header_mismatch_count: {header_mismatch_count}")
             
             if header_mismatch_count > 0:
                 # 数据格式不匹配，触发format_error事件
-                print(f"[update_data] 数据格式不匹配，触发format_error事件")
                 self.state_machine.handle_event('format_error', mismatch_count=header_mismatch_count)
                 continue
             
             # 数据格式正确，触发data_received事件
-            print(f"[update_data] 数据格式正确，触发data_received事件")
             self.state_machine.handle_event('data_received')
             
             self.data_count += 1
@@ -1366,7 +1405,7 @@ class MainWindow(QMainWindow):
             elapsed = current_time - self.last_data_time
             if elapsed > self.data_timeout:
                 # 数据超时，触发timeout事件
-                print(f"[check_data_timeout] 数据超时，触发timeout事件")
+                self.log_print(f"[check_data_timeout] 数据超时，触发timeout事件")
                 self.state_machine.handle_event('timeout')
                 # 重置last_data_time，避免重复检测超时
                 self.last_data_time = None
@@ -1379,7 +1418,7 @@ class MainWindow(QMainWindow):
         """
         channels = self.waveform_widget.get_all_channels()
         
-        print(f"[show_channel_context_menu] 当前通道: {channels}")
+        self.log_print(f"[show_channel_context_menu] 当前通道: {channels}")
         
         if not channels:
             return
@@ -1402,20 +1441,20 @@ class MainWindow(QMainWindow):
         if hasattr(current_source, 'get_protocol'):
             protocol = current_source.get_protocol()
             is_justfloat = (protocol == 'justfloat')
-            print(f"[show_channel_context_menu] 当前协议: {protocol}, is_justfloat: {is_justfloat}")
+            self.log_print(f"[show_channel_context_menu] 当前协议: {protocol}, is_justfloat: {is_justfloat}")
         else:
-            print(f"[show_channel_context_menu] 当前数据源不支持get_protocol方法")
+            self.log_print(f"[show_channel_context_menu] 当前数据源不支持get_protocol方法")
         
         # 只有Justfloat协议才显示重命名通道菜单
         if is_justfloat:
-            print(f"[show_channel_context_menu] 显示重命名通道菜单")
+            self.log_print(f"[show_channel_context_menu] 显示重命名通道菜单")
             rename_menu = menu.addMenu("重命名通道")
             for channel_name in channels:
                 action = QAction(channel_name, self)
                 action.triggered.connect(lambda checked, name=channel_name: self.rename_channel(name))
                 rename_menu.addAction(action)
         else:
-            print(f"[show_channel_context_menu] 不显示重命名通道菜单（非Justfloat协议）")
+            self.log_print(f"[show_channel_context_menu] 不显示重命名通道菜单（非Justfloat协议）")
         
         # 显示菜单
         menu.exec_(self.channels_label.mapToGlobal(position))
@@ -1451,9 +1490,9 @@ class MainWindow(QMainWindow):
             
             # 更新通道颜色
             self.waveform_widget.update_channel_color(channel_name, rgb)
-            print(f"通道 '{channel_name}' 颜色已更新为: {color.name()} ({rgb})")
+            self.log_print(f"通道 '{channel_name}' 颜色已更新为: {color.name()} ({rgb})")
         else:
-            print(f"通道 '{channel_name}' 颜色设置已取消")
+            self.log_print(f"通道 '{channel_name}' 颜色设置已取消")
     
     def rename_channel(self, old_name: str):
         """重命名通道
@@ -1461,10 +1500,10 @@ class MainWindow(QMainWindow):
         Args:
             old_name: 原通道名称
         """
-        print(f"[rename_channel] 开始重命名通道: {old_name}")
-        print(f"[rename_channel] waveform_widget.channels: {list(self.waveform_widget.channels.keys())}")
-        print(f"[rename_channel] data_source_manager.channels: {self.data_source_manager.channels}")
-        print(f"[rename_channel] data_source_manager.channel_name_mapping: {self.data_source_manager.get_channel_name_mapping()}")
+        self.log_print(f"[rename_channel] 开始重命名通道: {old_name}")
+        self.log_print(f"[rename_channel] waveform_widget.channels: {list(self.waveform_widget.channels.keys())}")
+        self.log_print(f"[rename_channel] data_source_manager.channels: {self.data_source_manager.channels}")
+        self.log_print(f"[rename_channel] data_source_manager.channel_name_mapping: {self.data_source_manager.get_channel_name_mapping()}")
         
         if old_name not in self.waveform_widget.channels:
             QMessageBox.warning(self, "错误", f"通道 '{old_name}' 不存在")
@@ -1479,33 +1518,33 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "错误", "通道名称不能为空")
                 return
             
-            print(f"[rename_channel] 用户输入新名称: {new_name}")
+            self.log_print(f"[rename_channel] 用户输入新名称: {new_name}")
             
             # 更新waveform_widget中的通道名
             self.waveform_widget.rename_channel(old_name, new_name)
-            print(f"[rename_channel] waveform_widget.rename_channel 完成")
+            self.log_print(f"[rename_channel] waveform_widget.rename_channel 完成")
             
             # 更新data_source_manager中的通道名映射
             self.data_source_manager.set_channel_name_mapping(old_name, new_name)
-            print(f"[rename_channel] data_source_manager.set_channel_name_mapping 完成")
+            self.log_print(f"[rename_channel] data_source_manager.set_channel_name_mapping 完成")
             
             # 更新data_source_manager中的通道列表（移除旧名称，添加新名称）
             if old_name in self.data_source_manager.channels:
                 self.data_source_manager.channels.remove(old_name)
                 self.data_source_manager.channels.append(new_name)
-                print(f"[rename_channel] data_source_manager.channels 更新后: {self.data_source_manager.channels}")
+                self.log_print(f"[rename_channel] data_source_manager.channels 更新后: {self.data_source_manager.channels}")
             
             # 更新通道显示
             channels_text = ", ".join(self.data_source_manager.get_channels())
             self.channels_label.setText(f"检测到通道: {channels_text}")
             
-            print(f"[rename_channel] 通道 '{old_name}' 已重命名为 '{new_name}'")
-            print(f"[rename_channel] 最终状态:")
-            print(f"[rename_channel]   waveform_widget.channels: {list(self.waveform_widget.channels.keys())}")
-            print(f"[rename_channel]   data_source_manager.channels: {self.data_source_manager.channels}")
-            print(f"[rename_channel]   data_source_manager.channel_name_mapping: {self.data_source_manager.get_channel_name_mapping()}")
+            self.log_print(f"[rename_channel] 通道 '{old_name}' 已重命名为 '{new_name}'")
+            self.log_print(f"[rename_channel] 最终状态:")
+            self.log_print(f"[rename_channel]   waveform_widget.channels: {list(self.waveform_widget.channels.keys())}")
+            self.log_print(f"[rename_channel]   data_source_manager.channels: {self.data_source_manager.channels}")
+            self.log_print(f"[rename_channel]   data_source_manager.channel_name_mapping: {self.data_source_manager.get_channel_name_mapping()}")
         else:
-            print(f"[rename_channel] 通道 '{old_name}' 重命名已取消")
+            self.log_print(f"[rename_channel] 通道 '{old_name}' 重命名已取消")
     
 
     def closeEvent(self, event):
