@@ -198,6 +198,42 @@
 2. 提交信息包含：影响层、回归范围、验证结果。
 3. 合并前检查 README.md 与 README_DEV.md 是否同步。
 
+## 打包规范（跨机器可用）
+
+1. 首选脚本
+- 使用项目根目录 `build_reliable.bat`，不要依赖个人机器的绝对路径。
+
+2. 脚本约定
+- 自动查找或创建虚拟环境（优先 `.venv`，其次 `venv`）。
+- 使用 `python -m PyInstaller main.spec`，避免 PATH 下 `pyinstaller` 命令缺失。
+
+3. 产物与验收
+- 产物默认在 `dist/Python上位机.exe`。
+- 提交前至少在干净环境跑一次脚本，确保克隆后可直接打包。
+
+## 打包常见问题（维护者视角）
+
+1. 脚本报找不到 Python
+- 先在终端确认：`py --version` 和 `python --version`。
+- 若都失败，属于机器环境问题，不是项目代码问题。
+
+2. 依赖安装失败
+- 优先检查网络与 pip 配置。
+- 建议先执行：`python -m pip install --upgrade pip` 再重试。
+
+3. EXE 启动即退出
+- 先清理旧产物后重打包（`build/`、`dist/`）。
+- 在终端直接运行 `dist/Python上位机.exe` 读取错误输出。
+- 排查杀软隔离与系统权限问题。
+
+4. 新增依赖后打包异常
+- 必须同步更新 `requirements.txt`。
+- 如为动态导入模块，必要时补充到 `main.spec` 的 hiddenimports。
+
+5. 机器间“我这里能打，别人不行”
+- 优先核对 Python 版本与架构（建议统一 x64）。
+- 要求按项目脚本打包，不允许使用个人本地硬编码路径。
+
 ## 回归测试命令
 
 ```bash
