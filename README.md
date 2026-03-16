@@ -53,6 +53,63 @@
 pip install -r requirements.txt
 ```
 
+## 打包（给克隆仓库的同事）
+
+本项目已经提供“可移植”的一键打包脚本，推荐优先使用。
+
+### 环境前提
+
+- 系统：Windows 10/11
+- 已安装 Python（建议 3.10+）
+- 命令行可识别 Python：`py` 或 `python`
+
+先在命令行检查：
+
+```bat
+py --version
+python --version
+```
+
+若两个都失败，请先安装 Python 并勾选“Add python.exe to PATH”。
+
+### 一键打包（推荐）
+
+在项目根目录执行：
+
+```bat
+build_reliable.bat
+```
+
+脚本会自动完成：
+- 自动探测 Python 启动方式（优先 `py -3`，失败则回退 `python`）
+- 在项目目录查找 `.venv` 或 `venv`，若不存在则自动创建 `.venv`
+- 升级 pip 并安装 `requirements.txt`
+- 自动安装 PyInstaller
+- 清理旧的 `build/`、`dist/` 并按 `main.spec` 打包
+
+打包完成后，产物默认在：
+- `dist/Python上位机.exe`
+
+### 手动打包（仅在脚本不适用时）
+
+```bat
+python -m venv .venv
+.venv\Scripts\python -m pip install --upgrade pip
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install pyinstaller
+.venv\Scripts\python -m PyInstaller main.spec
+```
+
+### 打包后自检清单
+
+建议把下面 6 项跑一遍再交付：
+- 启动 `dist/Python上位机.exe` 无报错
+- UDP 数据源能连接并看到曲线
+- TCP 监听模式可接收测试数据
+- 串口页可枚举串口（无设备也应显示列表）
+- “开始保存”在未连接时是禁用状态，连接后可点击
+- 拖出浮动页后，返回按钮和图钉按钮可正常使用
+
 ## 快速开始
 
 ### 1. 启动上位机
@@ -252,6 +309,47 @@ DATA,123.456,电压=1.23,电流=0.56,温度=25.1
 ### 3. 为什么重命名后又出现旧通道
 - 使用旧版本时可能因在途数据包导致旧键回流。
 - 已在新版本中通过通道名映射归一化处理修复。
+
+### 4. 打包时报“py 不是内部或外部命令”
+- 现象：执行 `build_reliable.bat` 时提示找不到 `py`/`python`。
+- 原因：本机未安装 Python，或 PATH 未配置。
+- 解决：
+- 安装 Python 3.10+。
+- 安装时勾选“Add python.exe to PATH”。
+- 重新打开终端后执行 `py --version` 或 `python --version` 验证。
+
+### 5. 打包时报 pip 下载超时或依赖安装失败
+- 现象：`pip install -r requirements.txt` 失败。
+- 原因：网络波动或镜像源不可达。
+- 解决：
+- 先重试一次脚本。
+- 使用稳定网络后重试。
+- 必要时手动执行：
+
+```bat
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### 6. 打包成功但 exe 启动闪退
+- 现象：`dist/Python上位机.exe` 双击后立即退出。
+- 原因：常见为杀软拦截、运行库/依赖异常或残留旧产物。
+- 解决：
+- 删除 `build/`、`dist/` 后重新运行 `build_reliable.bat`。
+- 把 `dist/Python上位机.exe` 加入杀软白名单再测试。
+- 在命令行启动 exe 观察报错信息：
+
+```bat
+dist\Python上位机.exe
+```
+
+### 7. 打包后界面可以打开，但图表没有数据
+- 现象：程序正常启动但无曲线。
+- 原因：多为连接参数不匹配，不是打包本身失败。
+- 解决：
+- 检查数据源类型是否选对（UDP/TCP/串口/文件）。
+- 检查端口、协议、校验头是否一致。
+- 先用 `tools/udp_sender.py` 发送标准测试流验证。
 
 ## 项目结构（用户关注）
 
