@@ -12,12 +12,22 @@ from .base import DataSource
 
 
 class TCPDataSource(DataSource):
-    """TCP数据源（服务端监听模式）"""
+    """TCP数据源（支持服务端监听与客户端主动连接）"""
 
-    def __init__(self, host: str = '0.0.0.0', port: int = 9999):
+    def __init__(
+        self,
+        host: str = '0.0.0.0',
+        port: int = 9999,
+        mode: str = 'server',
+        peer_host: str = '127.0.0.1',
+        peer_port: int = 9999,
+    ):
         super().__init__()
         self.host = host
         self.port = port
+        self.mode = mode  # 'server' or 'client'
+        self.peer_host = peer_host
+        self.peer_port = peer_port
         self.server_socket = None
         self.client_socket = None
         self.client_addr = None
@@ -27,6 +37,16 @@ class TCPDataSource(DataSource):
 
     def connect(self) -> bool:
         try:
+            if self.mode == 'client':
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((self.peer_host, self.peer_port))
+                sock.settimeout(0.001)
+                self.client_socket = sock
+                self.client_addr = (self.peer_host, self.peer_port)
+                self.is_connected = True
+                print(f"TCP数据源已连接到服务端: {self.peer_host}:{self.peer_port}")
+                return True
+
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_socket.bind((self.host, self.port))
@@ -43,6 +63,9 @@ class TCPDataSource(DataSource):
     def _ensure_client(self) -> bool:
         if self.client_socket is not None:
             return True
+
+        if self.mode == 'client':
+            return False
 
         if self.server_socket is None:
             return False

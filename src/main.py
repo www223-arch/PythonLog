@@ -808,10 +808,19 @@ class MainWindow(QMainWindow):
         self.tcp_group = QGroupBox("TCP配置")
         tcp_layout = QFormLayout()
 
+        self.tcp_mode_combo = QComboBox()
+        self.tcp_mode_combo.addItems(["监听", "主动连接"])
+        self.tcp_mode_combo.setCurrentText("监听")
+        self.tcp_mode_combo.currentTextChanged.connect(self.on_tcp_mode_changed)
         self.tcp_host_edit = QLineEdit("0.0.0.0")
         self.tcp_port_edit = QLineEdit("9999")
-        tcp_layout.addRow("监听地址:", self.tcp_host_edit)
-        tcp_layout.addRow("监听端口:", self.tcp_port_edit)
+        self.tcp_target_host_edit = QLineEdit("127.0.0.1")
+        self.tcp_target_port_edit = QLineEdit("9999")
+        tcp_layout.addRow("TCP模式:", self.tcp_mode_combo)
+        tcp_layout.addRow("本地地址:", self.tcp_host_edit)
+        tcp_layout.addRow("本地端口:", self.tcp_port_edit)
+        tcp_layout.addRow("目标地址:", self.tcp_target_host_edit)
+        tcp_layout.addRow("目标端口:", self.tcp_target_port_edit)
 
         self.tcp_group.setLayout(tcp_layout)
         self.tcp_group.setVisible(False)
@@ -1270,6 +1279,7 @@ class MainWindow(QMainWindow):
         
         # 设置初始UI状态
         self.on_source_type_changed(self.source_type_combo.currentText())
+        self.on_tcp_mode_changed(self.tcp_mode_combo.currentText())
         self.on_protocol_changed(self.protocol_combo.currentText())
         self.on_file_protocol_changed(self.file_protocol_combo.currentText())
 
@@ -1474,10 +1484,24 @@ class MainWindow(QMainWindow):
             return data_source, f"已连接到UDP {host}:{port}，数据校验头: {header}", None
 
         if source_type == "TCP":
-            host = self.tcp_host_edit.text()
-            port = int(self.tcp_port_edit.text())
-            data_source = create_tcp_source(host, port)
-            return data_source, f"已监听TCP {host}:{port}，协议: UDP同格式", None
+            mode_text = self.tcp_mode_combo.currentText()
+            local_host = self.tcp_host_edit.text()
+            local_port = int(self.tcp_port_edit.text())
+            target_host = self.tcp_target_host_edit.text().strip() or "127.0.0.1"
+            target_port = int(self.tcp_target_port_edit.text())
+
+            if mode_text == "主动连接":
+                data_source = create_tcp_source(
+                    host=local_host,
+                    port=local_port,
+                    mode='client',
+                    peer_host=target_host,
+                    peer_port=target_port,
+                )
+                return data_source, f"已连接TCP服务端 {target_host}:{target_port}，协议: UDP同格式", None
+
+            data_source = create_tcp_source(host=local_host, port=local_port, mode='server')
+            return data_source, f"已监听TCP {local_host}:{local_port}，协议: UDP同格式", None
 
         if source_type == "串口":
             serial_port = self.serial_port_combo.currentData()  # 获取实际的串口号（如COM1）
@@ -1624,6 +1648,7 @@ class MainWindow(QMainWindow):
             self.header_group.setEnabled(True)
             self.justfloat_group.setVisible(False)
             self.header_group.setVisible(True)
+            self.on_tcp_mode_changed(self.tcp_mode_combo.currentText())
             return
 
         if source_type == "串口":
@@ -1704,6 +1729,15 @@ class MainWindow(QMainWindow):
     def on_file_protocol_changed(self, protocol_text: str):
         """文件协议改变事件处理。"""
         self._apply_protocol_ui(protocol_text)
+
+    def on_tcp_mode_changed(self, mode_text: str):
+        """TCP模式切换：监听/主动连接。"""
+        is_client = (mode_text == "主动连接")
+
+        self.tcp_host_edit.setEnabled(not is_client)
+        self.tcp_port_edit.setEnabled(not is_client)
+        self.tcp_target_host_edit.setEnabled(is_client)
+        self.tcp_target_port_edit.setEnabled(is_client)
 
     def browse_input_file(self):
         """浏览输入数据文件（.log/.bin）。"""

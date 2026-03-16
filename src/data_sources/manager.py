@@ -523,17 +523,26 @@ def create_udp_source(host: str = '0.0.0.0', port: int = 8888) -> UDPDataSource:
     return UDPDataSource(host, port)
 
 
-def create_tcp_source(host: str = '0.0.0.0', port: int = 9999) -> TCPDataSource:
-    """创建TCP数据源（服务端监听模式）
+def create_tcp_source(
+    host: str = '0.0.0.0',
+    port: int = 9999,
+    mode: str = 'server',
+    peer_host: str = '127.0.0.1',
+    peer_port: int = 9999,
+) -> TCPDataSource:
+    """创建TCP数据源（支持服务端监听/客户端主动连接）
 
     Args:
-        host: 监听主机地址
-        port: 监听端口
+        host: 本地主机地址（服务端监听时使用）
+        port: 本地端口（服务端监听时使用）
+        mode: 模式，'server'或'client'
+        peer_host: 目标主机地址（客户端模式使用）
+        peer_port: 目标端口（客户端模式使用）
 
     Returns:
         TCP数据源对象
     """
-    return TCPDataSource(host, port)
+    return TCPDataSource(host, port, mode, peer_host, peer_port)
 
 
 def create_serial_source(port: str = 'COM1', baudrate: int = 115200, protocol: str = 'text', data_header: str = 'DATA', justfloat_mode: str = 'without_timestamp', delta_t: float = 1.0):
