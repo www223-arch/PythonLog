@@ -1841,6 +1841,8 @@ QDockWidget::float-button {
         
         self.save_btn = QPushButton("开始保存")
         self.save_btn.clicked.connect(self.toggle_saving)
+        self.save_btn.setEnabled(False)
+        self.save_btn.setToolTip("请先连接数据源后再开始保存")
         save_layout.addWidget(self.save_btn)
         
         save_group.setLayout(save_layout)
@@ -1850,11 +1852,6 @@ QDockWidget::float-button {
         layout.addStretch()
         
     
-        # 退出按钮
-        exit_btn = QPushButton("退出")
-        exit_btn.clicked.connect(self.close)
-        layout.addWidget(exit_btn)
-        
         panel.setLayout(layout)
         return panel
     
@@ -2239,6 +2236,7 @@ QDockWidget::float-button {
         self.channels_label.setText("自动检测通道...")
         self.last_channels_text = "自动检测通道..."
         self.save_btn.setText("开始保存")
+        self.save_btn.setEnabled(False)
         self.auto_save_enabled = False
         self.clear_raw_data()  # 清空原始数据接收区
 
@@ -2437,6 +2435,7 @@ QDockWidget::float-button {
                 self.pause_btn.setText("暂停")
                 self.pause_btn.setEnabled(True)
                 self.send_btn.setEnabled(source_type in ("UDP", "TCP", "串口"))
+                self.save_btn.setEnabled(True)
                 # 连接后锁定配置，防止运行中误改
                 self._set_connection_config_enabled(False)
                 # 启动数据接收线程
@@ -2705,6 +2704,14 @@ QDockWidget::float-button {
     
     def toggle_saving(self):
         """切换数据保存状态"""
+        if not self.data_source_manager.is_connected():
+            QMessageBox.information(self, "提示", "请先连接数据源，再开始保存")
+            self.save_btn.setEnabled(False)
+            self.save_btn.setText("开始保存")
+            self.save_file_label.setText("保存文件: 无")
+            self.auto_save_enabled = False
+            return
+
         if self.data_source_manager.is_saving():
             self.data_source_manager.stop_saving()
             self.save_btn.setText("开始保存")
