@@ -74,7 +74,7 @@ class WaveformWidget(QWidget):
         # 频域分析控制面板
         fft_control_layout = QHBoxLayout()
         
-        fft_label = QLabel("频域分析:")
+        fft_label = QLabel("显示/分析:")
         fft_label.setFont(QFont("Arial", 10, QFont.Bold))
         
         self.channel_combo = QComboBox()
