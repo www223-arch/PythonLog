@@ -6,16 +6,25 @@ UDP数据发送工具
 """
 
 import socket
-import struct
 import time
 import math
 import argparse
+import threading
 
 
 class UDPSender:
     """UDP数据发送器"""
     
-    def __init__(self, host: str = '127.0.0.1', port: int = 8888, dump_log_path: str = ''):
+    def __init__(
+        self,
+        host: str = '127.0.0.1',
+        port: int = 8888,
+        dump_log_path: str = '',
+        enable_recv: bool = False,
+        recv_host: str = '0.0.0.0',
+        recv_port: int = 8889,
+        recv_format: str = 'text',
+    ):
         """初始化UDP发送器
         
         Args:
@@ -28,9 +37,55 @@ class UDPSender:
         self.is_running = False
         self.dump_log_path = dump_log_path
         self._dump_fp = None
+        self.enable_recv = enable_recv
+        self.recv_host = recv_host
+        self.recv_port = recv_port
+        self.recv_format = recv_format
+        self.recv_socket = None
+        self.recv_thread = None
 
         if self.dump_log_path:
             self._dump_fp = open(self.dump_log_path, 'a', encoding='utf-8')
+
+    def start_receiver(self) -> None:
+        """启动UDP接收线程（用于调试回包）。"""
+        if not self.enable_recv:
+            return
+        if self.recv_thread and self.recv_thread.is_alive():
+            return
+
+        self.recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.recv_socket.bind((self.recv_host, self.recv_port))
+        self.recv_socket.settimeout(0.2)
+
+        self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
+        self.recv_thread.start()
+        print(f"UDP接收监听已启动: {self.recv_host}:{self.recv_port} ({self.recv_format})")
+
+    def _recv_loop(self) -> None:
+        while self.is_running and self.recv_socket:
+            try:
+                data, addr = self.recv_socket.recvfrom(4096)
+                self._print_rx_data(data, addr)
+            except socket.timeout:
+                continue
+            except Exception:
+                break
+
+    def _print_rx_data(self, data: bytes, addr) -> None:
+        if self.recv_format == 'hex':
+            content = data.hex(' ').upper()
+        else:
+            content = data.decode('utf-8', errors='replace').rstrip('\r\n')
+        print(f"[RX][{addr[0]}:{addr[1]}] {content}")
+
+    def stop_receiver(self) -> None:
+        if self.recv_socket:
+            try:
+                self.recv_socket.close()
+            except Exception:
+                pass
+            self.recv_socket = None
     
     def send_data(self, timestamp: float, channel_data: dict, header: str = 'DATA') -> None:
         """发送数据
@@ -67,8 +122,9 @@ class UDPSender:
             header: 数据校验头（默认'DATA'）
         """
         self.is_running = True
+        self.start_receiver()
         start_time = time.time()
-        sample_rate = 5000
+        sample_rate = 1000
           # 采样率
         
         # 使用自定义通道名称，如果没有则使用默认
@@ -114,6 +170,7 @@ class UDPSender:
             print("\n发送已停止")
         finally:
             self.is_running = False
+            self.stop_receiver()
             self.socket.close()
             if self._dump_fp:
                 self._dump_fp.close()
@@ -133,6 +190,7 @@ class UDPSender:
         import random
         
         self.is_running = True
+        self.start_receiver()
         start_time = time.time()
         sample_rate = 20
         
@@ -175,6 +233,7 @@ class UDPSender:
             print("\n发送已停止")
         finally:
             self.is_running = False
+            self.stop_receiver()
             self.socket.close()
             if self._dump_fp:
                 self._dump_fp.close()
@@ -188,9 +247,11 @@ class UDPSender:
 
 def main():
     """主函数"""
+    #192.168.114.238
+    #127.0.0.1
     parser = argparse.ArgumentParser(description='UDP数据发送工具')
-    parser.add_argument('--host', type=str, default='192.168.114.238', 
-                       help='目标主机地址 (默认: 192.168.114.238)')
+    parser.add_argument('--host', type=str, default='127.0.0.1', 
+                       help='目标主机地址 (默认: 127.0.0.1)')
     parser.add_argument('--port', type=int, default=8888, 
                        help='目标端口 (默认: 8888)')
     parser.add_argument('--type', type=str, choices=['sine', 'random'], 
@@ -211,11 +272,27 @@ def main():
                        help='数据校验头 (默认: DATA)')
     parser.add_argument('--dump-log', type=str, default='',
                        help='可选：同步追加写入日志文件（用于文件源实时联调）')
+    parser.add_argument('--recv', action='store_true',
+                       help='启用接收调试：在终端显示收到的数据')
+    parser.add_argument('--recv-host', type=str, default='0.0.0.0',
+                       help='接收监听地址 (默认: 0.0.0.0)')
+    parser.add_argument('--recv-port', type=int, default=8889,
+                       help='接收监听端口 (默认: 8889)')
+    parser.add_argument('--recv-format', choices=['text', 'hex'], default='text',
+                       help='接收显示格式: text 或 hex')
     
     args = parser.parse_args()
     
     # 创建发送器
-    sender = UDPSender(args.host, args.port, args.dump_log)
+    sender = UDPSender(
+        args.host,
+        args.port,
+        args.dump_log,
+        args.recv,
+        args.recv_host,
+        args.recv_port,
+        args.recv_format,
+    )
     
     # 发送数据
     if args.type == 'sine':

@@ -14,9 +14,9 @@ import threading
 import time
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut, QComboBox, QTextEdit, QSplitter, QInputDialog)
-from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient, QKeySequence
+                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut, QComboBox, QTextEdit, QSplitter, QInputDialog, QDockWidget, QToolBar, QToolButton)
+from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize, QThread, pyqtSignal, QEvent, QRectF, QPointF
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient, QKeySequence, QIcon, QPixmap, QPolygonF
 
 from data_sources.manager import (
     DataSourceManager,
@@ -81,6 +81,10 @@ class DataReceiveThread(QThread):
                     # 将数据放入队列
                     data_queue.put(frame, block=False)
                     self.recv_ok_count += 1
+                    # 文件回放源在本地磁盘读取速度可能远高于UI消费速度，
+                    # 轻微限流避免队列抖动丢帧导致波形“长直线跨点”。
+                    if getattr(source, 'port', None) == 'FILE':
+                        time.sleep(0.0005)
                 else:
                     # 无数据时短暂休眠，降低CPU占用并减少对UI线程抢占
                     time.sleep(0.0002)
@@ -687,6 +691,7 @@ class MainWindow(QMainWindow):
         # 提前初始化日志开关，确保init_ui阶段可安全调用log_print
         self.log_enabled = False  # 默认关闭日志
         self.fsm_debug_enabled = True  # FSM/UI调试日志默认开启，便于定位状态切换问题
+        self.window_debug_enabled = (os.environ.get("PYTHONLOG_WIN_DEBUG", "0") == "1")  # 窗口层级调试默认关闭
         self.init_ui()
         self.init_components()
         self.init_connections()
@@ -700,6 +705,17 @@ class MainWindow(QMainWindow):
         """FSM/UI调试日志输出接口（不受普通日志开关影响）。"""
         if self.fsm_debug_enabled:
             print(*args, **kwargs)
+
+    def window_debug_print(self, *args, **kwargs) -> None:
+        """窗口层级与置顶相关诊断日志。"""
+        if self.window_debug_enabled:
+            print(*args, **kwargs)
+
+    def _dock_tag(self, dock: QDockWidget) -> str:
+        """生成稳定的Dock调试标签。"""
+        if dock is None:
+            return "dock=None"
+        return f"{dock.objectName() or 'dock'}@{hex(id(dock))}"
 
     def _debug_ui_state_snapshot(self, tag: str, event: str = "", **kwargs) -> None:
         """打印UI状态快照，便于排查状态与显示不一致问题。"""
@@ -724,45 +740,857 @@ class MainWindow(QMainWindow):
         """初始化UI"""
         self.setWindowTitle("Python上位机 - 数据采集")
         self.setGeometry(100, 100, 1400, 800)
-        
-        # 创建中央控件
-        central_widget = QWidget()
-        main_layout = QHBoxLayout()
-        
-        # 左侧控制面板
+
+        # 启用Dock布局：支持拖拽、分离、复位
+        self.setDockNestingEnabled(True)
+        self.setDockOptions(
+            QMainWindow.AllowNestedDocks |
+            QMainWindow.AllowTabbedDocks |
+            QMainWindow.AnimatedDocks
+        )
+
+        # 主面板
         control_panel = self.create_control_panel()
-        
-        # 右侧面板（使用QSplitter支持调整大小）
-        right_splitter = QSplitter(Qt.Vertical)
-        
-        # 右侧上部：波形显示
         self.waveform_widget = WaveformWidget()
-        
-        # 右侧下部：原始数据接收区
         raw_data_panel = self.create_raw_data_panel()
-        
-        # 添加到分割器
-        right_splitter.addWidget(self.waveform_widget)
-        right_splitter.addWidget(raw_data_panel)
-        
-        # 设置初始比例（波形显示占70%，原始数据接收区占30%）
-        right_splitter.setStretchFactor(0, 7)
-        right_splitter.setStretchFactor(1, 3)
-        
-        # 设置最小尺寸，防止一个被压缩消失
-        right_splitter.setChildrenCollapsible(False)  # 禁止折叠
-        right_splitter.setHandleWidth(5)  # 设置分割线宽度
-        
-        # 设置子控件的最小尺寸
-        self.waveform_widget.setMinimumSize(QSize(200, 200))  # 波形显示最小尺寸
-        raw_data_panel.setMinimumSize(QSize(200, 100))  # 原始数据接收区最小尺寸
-        
-        # 添加到主布局
-        main_layout.addWidget(control_panel, 1)
-        main_layout.addWidget(right_splitter, 3)
-        
-        central_widget.setLayout(main_layout)
-        self.setCentralWidget(central_widget)
+
+        self.control_dock = self._create_panel_dock("", "dock_control", control_panel, Qt.LeftDockWidgetArea)
+        self.waveform_dock = self._create_panel_dock("", "dock_waveform", self.waveform_widget, Qt.LeftDockWidgetArea)
+        self.raw_data_dock = self._create_panel_dock("", "dock_raw_data", raw_data_panel, Qt.LeftDockWidgetArea)
+
+        # 默认布局：左控制，右上波形，右下原始数据/发送（覆盖整个工作区，避免中央空白区）
+        self.splitDockWidget(self.control_dock, self.waveform_dock, Qt.Horizontal)
+        self.splitDockWidget(self.waveform_dock, self.raw_data_dock, Qt.Vertical)
+        self.resizeDocks([self.control_dock, self.waveform_dock], [380, 980], Qt.Horizontal)
+        self.resizeDocks([self.waveform_dock, self.raw_data_dock], [560, 240], Qt.Vertical)
+
+        # 工具栏：锁定尺寸 + 一键复原
+        self._init_layout_toolbar()
+        self._install_layer_switching()
+        self._bind_dock_signals()
+        self._layout_locked = False
+
+        # 自定义样式：避免呆板文本按钮风格
+        self.setStyleSheet(self.styleSheet() + """
+QDockWidget::title {
+    text-align: left;
+    padding: 6px 10px;
+    color: #1F2A44;
+    font-weight: 600;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #DDE8FF, stop:1 #C7DAFF);
+    border-bottom: 1px solid #B5C8ED;
+}
+QToolBar#layoutToolbar {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #F5FAFF, stop:1 #EAF4FF);
+    border: 1px solid #C8D9F2;
+    spacing: 8px;
+    padding: 4px;
+}
+QToolBar#layoutToolbar QToolButton {
+    border: 1px solid #9CB8E6;
+    border-radius: 8px;
+    background: #FFFFFF;
+    color: #24406F;
+    min-width: 22px;
+    min-height: 22px;
+    padding: 2px;
+    font-weight: 600;
+}
+QToolBar#layoutToolbar QToolButton:checked {
+    background: #2E6CE6;
+    color: #FFFFFF;
+    border-color: #2E6CE6;
+}
+QToolBar#layoutToolbar QToolButton:hover {
+    background: #EAF2FF;
+}
+QDockWidget::close-button,
+QDockWidget::float-button {
+    width: 0px;
+    height: 0px;
+    border: none;
+    margin: 0px;
+    padding: 0px;
+}
+""")
+
+        # 保存默认布局，供一键复原
+        self._default_geometry = self.saveGeometry()
+        self._default_dock_state = self.saveState()
+        self._global_above_taskbar = True
+        self._pinned_dock = None
+        self._handling_visibility_change = False
+        self._reasserting_pinned_dock = False
+        self._topmost_guard_timer = QTimer(self)
+        self._topmost_guard_timer.timeout.connect(self._on_topmost_guard_tick)
+        self._topmost_guard_timer.start(300)
+        QTimer.singleShot(0, self._enforce_global_topmost)
+
+    def _create_panel_dock(self, title: str, object_name: str, widget: QWidget, area) -> QDockWidget:
+        """创建可拖拽/可分离的Dock面板。"""
+        dock = QDockWidget(title, self)
+        dock.setObjectName(object_name)
+        dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        dock.setWidget(widget)
+        dock.setMinimumSize(QSize(220, 140))
+        # 记录原始标题栏，便于在“单页/合并页”间切换样式
+        dock._default_title_bar = dock.titleBarWidget()
+        dock._last_dock_area = area
+        self.addDockWidget(area, dock)
+        self._setup_floating_controls(dock)
+        return dock
+
+    def _setup_floating_controls(self, dock: QDockWidget):
+        """为每个Dock创建浮动时显示的右上角控制按钮（返回/置顶）。"""
+        controls = QWidget(dock)
+        controls.setObjectName(f"{dock.objectName()}_floatControls")
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(2)
+
+        return_btn = QToolButton(controls)
+        return_btn.setText("↩")
+        return_btn.setToolTip("放回主布局")
+        return_btn.setFixedSize(18, 18)
+        return_btn.clicked.connect(lambda _=False, d=dock: self._return_floating_dock(d))
+
+        pin_btn = QToolButton(controls)
+        pin_btn.setIcon(self._build_pin_icon(False))
+        pin_btn.setIconSize(QSize(12, 12))
+        pin_btn.setToolTip("置顶（显示在所有应用上方）")
+        pin_btn.setCheckable(True)
+        pin_btn.setFixedSize(18, 18)
+        pin_btn.toggled.connect(lambda checked, d=dock: self._set_floating_dock_on_top(d, checked))
+
+        controls_layout.addWidget(return_btn)
+        controls_layout.addWidget(pin_btn)
+        controls.setStyleSheet(
+            "QToolButton {"
+            "border: 1px solid #A9BFEA;"
+            "border-radius: 5px;"
+            "background: #FFFFFF;"
+            "padding: 0px;"
+            "font-size: 11px;"
+            "}"
+            "QToolButton:hover {"
+            "background: #EAF2FF;"
+            "}"
+            "QToolButton:checked {"
+            "background: #2E6CE6;"
+            "color: #FFFFFF;"
+            "border-color: #2E6CE6;"
+            "}"
+        )
+        controls.hide()
+
+        dock._float_controls = controls
+        dock._return_btn = return_btn
+        dock._pin_btn = pin_btn
+        dock._is_on_top = False
+
+    def _build_pin_icon(self, pinned: bool) -> QIcon:
+        """绘制图钉图标（置顶开/关）。"""
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        color = QColor("#FFFFFF") if pinned else QColor("#24406F")
+        painter.setPen(QPen(color, 1.1))
+        painter.setBrush(QBrush(color))
+
+        # 图钉头
+        head = QPolygonF([
+            QPointF(2.0, 2.2),
+            QPointF(10.0, 2.2),
+            QPointF(8.0, 5.2),
+            QPointF(4.0, 5.2),
+        ])
+        painter.drawPolygon(head)
+
+        # 图钉针身
+        painter.drawLine(QPointF(6.0, 5.2), QPointF(6.0, 10.2))
+        painter.drawLine(QPointF(6.0, 10.2), QPointF(4.8, 11.0))
+
+        painter.end()
+        return QIcon(pixmap)
+
+    def _position_floating_controls(self, dock: QDockWidget):
+        """将浮动控制按钮定位到浮动页右上角。"""
+        controls = getattr(dock, '_float_controls', None)
+        if controls is None:
+            return
+
+        controls.adjustSize()
+        x = max(4, dock.width() - controls.width() - 6)
+        y = 6
+        controls.move(x, y)
+
+    def _update_floating_controls_visibility(self, dock: QDockWidget):
+        """仅在Dock浮动时显示右上角返回/置顶按钮。"""
+        controls = getattr(dock, '_float_controls', None)
+        if controls is None:
+            return
+
+        pin_btn = getattr(dock, '_pin_btn', None)
+        is_on_top = bool(getattr(dock, '_is_on_top', False))
+        if pin_btn is not None:
+            pin_btn.blockSignals(True)
+            pin_btn.setChecked(is_on_top)
+            pin_btn.setIcon(self._build_pin_icon(is_on_top))
+            pin_btn.setToolTip("取消置顶（恢复普通层级）" if is_on_top else "置顶（显示在所有应用上方）")
+            pin_btn.blockSignals(False)
+
+        if dock.isFloating() and dock.isVisible():
+            controls.show()
+            controls.raise_()
+            self._position_floating_controls(dock)
+            self._keep_pinned_dock_front()
+        else:
+            controls.hide()
+            # 仅当不再浮动时清除单窗口置顶状态，避免窗口重排瞬时过程误清空
+            if (
+                not dock.isFloating()
+                and getattr(dock, '_is_on_top', False)
+                and self._pinned_dock is not dock
+            ):
+                dock._is_on_top = False
+                self._apply_windows_topmost(dock, False)
+            # 钉住状态不在这里清空；由“主动取消置顶/主动返回停靠”路径负责清空。
+
+    def _return_floating_dock(self, dock: QDockWidget):
+        """将当前浮动页放回主布局。"""
+        if dock is None or not dock.isFloating():
+            return
+
+        pin_btn = getattr(dock, '_pin_btn', None)
+        if pin_btn is not None and pin_btn.isChecked():
+            pin_btn.setChecked(False)
+
+        self._unlock_pinned_dock_docking(dock)
+        dock._is_on_top = False
+        self._apply_windows_topmost(dock, False)
+        self._set_windows_owner(dock, self)
+        if self._pinned_dock is dock:
+            self._pinned_dock = None
+
+        area = getattr(dock, '_last_dock_area', Qt.LeftDockWidgetArea)
+        dock.setFloating(False)
+        self.addDockWidget(area, dock)
+        dock.show()
+        self._rebalance_collapsed_docks()
+
+    def _lock_pinned_dock_docking(self, dock: QDockWidget):
+        """钉住后锁定为仅浮动态，避免触发停靠再弹回。"""
+        if dock is None:
+            return
+
+        if not hasattr(dock, '_pre_pin_allowed_areas'):
+            dock._pre_pin_allowed_areas = dock.allowedAreas()
+        if not hasattr(dock, '_pre_pin_features'):
+            dock._pre_pin_features = dock.features()
+
+        dock.setAllowedAreas(Qt.NoDockWidgetArea)
+        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        if not dock.isFloating():
+            dock.setFloating(True)
+            dock.show()
+
+    def _unlock_pinned_dock_docking(self, dock: QDockWidget):
+        """取消钉住后恢复原始停靠能力。"""
+        if dock is None:
+            return
+
+        pre_allowed_areas = getattr(dock, '_pre_pin_allowed_areas', None)
+        if pre_allowed_areas is not None:
+            dock.setAllowedAreas(pre_allowed_areas)
+            delattr(dock, '_pre_pin_allowed_areas')
+        else:
+            dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+
+        pre_features = getattr(dock, '_pre_pin_features', None)
+        if pre_features is not None:
+            dock.setFeatures(pre_features)
+            delattr(dock, '_pre_pin_features')
+        elif not getattr(self, '_layout_locked', False):
+            dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+
+    def _resolve_windows_root_hwnd(self, widget: QWidget):
+        """获取窗口根句柄，避免对子控件句柄置顶无效。"""
+        if os.name != 'nt' or widget is None:
+            return None
+
+        try:
+            import ctypes
+            hwnd = int(widget.winId())
+            GA_ROOT = 2
+            root = ctypes.windll.user32.GetAncestor(hwnd, GA_ROOT)
+            return int(root) if root else int(hwnd)
+        except Exception:
+            return None
+
+    def _set_windows_owner(self, widget: QWidget, owner: QWidget):
+        """设置Windows窗口owner；浮动页设为None可避免随主窗口最小化。"""
+        if os.name != 'nt' or widget is None:
+            return
+
+        try:
+            import ctypes
+            hwnd = self._resolve_windows_root_hwnd(widget)
+            if hwnd is None:
+                return
+
+            owner_hwnd = 0
+            if owner is not None:
+                resolved_owner = self._resolve_windows_root_hwnd(owner)
+                owner_hwnd = int(resolved_owner) if resolved_owner is not None else 0
+
+            GWL_HWNDPARENT = -8
+            set_window_long_ptr = ctypes.windll.user32.SetWindowLongPtrW
+            set_window_long_ptr.restype = ctypes.c_void_p
+            set_window_long_ptr.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+            set_window_long_ptr(ctypes.c_void_p(hwnd), GWL_HWNDPARENT, ctypes.c_void_p(owner_hwnd))
+            self.window_debug_print(
+                f"[WIN_DEBUG] set_owner widget_hwnd={hwnd} owner_hwnd={owner_hwnd} "
+                f"widget={type(widget).__name__}"
+            )
+        except Exception:
+            pass
+
+    def _set_dock_transient_parent(self, dock: QDockWidget, parent_widget: QWidget):
+        """设置或清空浮动Dock的transient parent，降低被主窗口状态绑定概率。"""
+        if dock is None:
+            return
+
+        try:
+            dock_window = dock.windowHandle()
+            parent_window = parent_widget.windowHandle() if parent_widget is not None else None
+            if dock_window is not None:
+                dock_window.setTransientParent(parent_window)
+                self.window_debug_print(
+                    f"[WIN_DEBUG] transient_parent dock={self._dock_tag(dock)} "
+                    f"set={'main' if parent_widget is not None else 'None'}"
+                )
+        except Exception as e:
+            self.window_debug_print(f"[WIN_DEBUG] transient_parent_failed dock={self._dock_tag(dock)} err={e}")
+
+    def _apply_qt_topmost_flag(self, widget: QWidget, on_top: bool):
+        """按 test.py 方案切换Qt置顶标志，并通过show()立即生效。"""
+        if widget is None:
+            return
+
+        try:
+            current_top = bool(widget.windowFlags() & Qt.WindowStaysOnTopHint)
+            if current_top == bool(on_top):
+                return
+
+            was_visible = widget.isVisible()
+            flags = widget.windowFlags() | Qt.Window
+            if on_top:
+                flags |= Qt.WindowStaysOnTopHint
+            else:
+                flags &= ~Qt.WindowStaysOnTopHint
+            widget.setWindowFlags(flags)
+            if was_visible:
+                widget.show()
+            self.window_debug_print(
+                f"[WIN_DEBUG] qt_topmost widget={type(widget).__name__} on_top={on_top} "
+                f"was_visible={was_visible}"
+            )
+        except Exception:
+            pass
+
+    def _apply_qwindow_topmost_flag(self, dock: QDockWidget, on_top: bool):
+        """对浮动Dock的QWindow设置置顶标志，避免QWidget setWindowFlags副作用。"""
+        if dock is None:
+            return
+        try:
+            window_handle = dock.windowHandle()
+            if window_handle is None:
+                return
+            window_handle.setFlag(Qt.WindowStaysOnTopHint, bool(on_top))
+        except Exception:
+            pass
+
+    def _apply_windows_topmost(self, widget: QWidget, on_top: bool):
+        """Windows下使用原生API设置窗口是否置于所有应用上方。"""
+        if os.name != 'nt' or widget is None:
+            return
+
+        try:
+            import ctypes
+            hwnd = self._resolve_windows_root_hwnd(widget)
+            if hwnd is None:
+                return
+            HWND_TOPMOST = -1
+            HWND_NOTOPMOST = -2
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOOWNERZORDER = 0x0200
+            SWP_NOACTIVATE = 0x0010
+            SWP_SHOWWINDOW = 0x0040
+            flags_on = SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW
+            flags_off = SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_NOACTIVATE
+
+            # 对置顶使用“先降后升”策略，提升在系统中的层级重排成功率。
+            if on_top:
+                ctypes.windll.user32.SetWindowPos(
+                    hwnd,
+                    HWND_NOTOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    flags_on,
+                )
+                ctypes.windll.user32.SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    flags_on,
+                )
+                try:
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                except Exception:
+                    pass
+            else:
+                ctypes.windll.user32.SetWindowPos(
+                    hwnd,
+                    HWND_NOTOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    flags_off,
+                )
+            self.window_debug_print(f"[WIN_DEBUG] win32_topmost hwnd={hwnd} on_top={on_top}")
+        except Exception:
+            pass
+
+    def _on_topmost_guard_tick(self):
+        """周期守护：确保钉住页始终在所有应用上方。"""
+        if os.name != 'nt':
+            return
+
+        # 高频守护优先钉住页，主窗口低频重申避免重排干扰。
+        self._keep_pinned_dock_front()
+
+        tick = getattr(self, '_topmost_tick_counter', 0) + 1
+        self._topmost_tick_counter = tick
+        if getattr(self, '_global_above_taskbar', False) and tick % 10 == 0:
+            self._apply_windows_topmost(self, True)
+
+    def _keep_pinned_dock_front(self):
+        """若存在钉住页面，始终保持其位于其他页面之上。"""
+        dock = getattr(self, '_pinned_dock', None)
+        if dock is None:
+            return
+        if not dock.isFloating():
+            self._force_refloat_pinned_dock(dock)
+            if not dock.isFloating():
+                self._pinned_dock = None
+            return
+
+        if not dock.isVisible():
+            return
+
+        # 钉住页持续保持“独立于主窗口”的关系，避免被主窗口层级覆盖。
+        self._set_dock_transient_parent(dock, None)
+        self._set_windows_owner(dock, None)
+        self._apply_qwindow_topmost_flag(dock, True)
+
+        dock.raise_()
+        if os.name == 'nt':
+            self._apply_windows_topmost(dock, True)
+
+    def _force_refloat_pinned_dock(self, dock: QDockWidget):
+        """防止已钉住页面被系统/布局回收到主窗口停靠态。"""
+        if dock is None:
+            return
+        if self._reasserting_pinned_dock:
+            return
+        if not getattr(dock, '_is_on_top', False) and self._pinned_dock is not dock:
+            return
+        if dock.isFloating():
+            return
+
+        self._reasserting_pinned_dock = True
+        try:
+            dock.setFloating(True)
+            dock.show()
+            self._set_dock_transient_parent(dock, None)
+            self._set_windows_owner(dock, None)
+            if os.name == 'nt':
+                self._apply_windows_topmost(dock, True)
+            dock.raise_()
+            dock.activateWindow()
+            self._pinned_dock = dock
+        finally:
+            self._reasserting_pinned_dock = False
+
+    def _enforce_global_topmost(self):
+        """主窗口与浮动页统一保持高层级，避免被任务栏/导航层覆盖。"""
+        if not getattr(self, '_global_above_taskbar', False):
+            return
+
+        if os.name == 'nt':
+            self._apply_windows_topmost(self, True)
+            pinned = getattr(self, '_pinned_dock', None)
+            for dock in (self.control_dock, self.waveform_dock, self.raw_data_dock):
+                if dock.isFloating() and dock.isVisible():
+                    should_top = bool(pinned is dock or getattr(dock, '_is_on_top', False))
+                    self._apply_windows_topmost(dock, should_top)
+        else:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            self.show()
+        self._keep_pinned_dock_front()
+
+    def _set_floating_dock_on_top(self, dock: QDockWidget, on_top: bool):
+        """设置浮动页是否置顶显示。"""
+        if dock is None:
+            return
+
+        if not dock.isFloating() and on_top:
+            return
+
+        dock._is_on_top = bool(on_top)
+        if on_top:
+            for other in (self.control_dock, self.waveform_dock, self.raw_data_dock):
+                if other is dock:
+                    continue
+                if getattr(other, '_is_on_top', False):
+                    other._is_on_top = False
+                    other_pin_btn = getattr(other, '_pin_btn', None)
+                    if other_pin_btn is not None and other_pin_btn.isChecked():
+                        other_pin_btn.blockSignals(True)
+                        other_pin_btn.setChecked(False)
+                        other_pin_btn.setIcon(self._build_pin_icon(False))
+                        other_pin_btn.setToolTip("置顶（显示在所有应用上方）")
+                        other_pin_btn.blockSignals(False)
+                    self._unlock_pinned_dock_docking(other)
+            self._pinned_dock = dock
+            self._lock_pinned_dock_docking(dock)
+        else:
+            if self._pinned_dock is dock:
+                self._pinned_dock = None
+            self._unlock_pinned_dock_docking(dock)
+
+        should_top = bool(on_top)
+        self.window_debug_print(
+            f"[WIN_DEBUG] pin_toggle dock={self._dock_tag(dock)} on_top={on_top} "
+            f"should_top={should_top} floating={dock.isFloating()} visible={dock.isVisible()}"
+        )
+        if dock.isFloating():
+            self._set_dock_transient_parent(dock, None)
+            self._set_windows_owner(dock, None)
+            self._apply_qwindow_topmost_flag(dock, should_top)
+        # 对QDockWidget避免使用setWindowFlags路径，防止浮动页被回收进主布局。
+        if not isinstance(dock, QDockWidget):
+            self._apply_qt_topmost_flag(dock, should_top)
+        if os.name == 'nt':
+            self._apply_windows_topmost(dock, should_top)
+        else:
+            if not isinstance(dock, QDockWidget):
+                dock.setWindowFlag(Qt.WindowStaysOnTopHint, should_top)
+                dock.show()
+
+        if on_top:
+            dock.raise_()
+            dock.activateWindow()
+
+        pin_btn = getattr(dock, '_pin_btn', None)
+        if pin_btn is not None:
+            pin_btn.setIcon(self._build_pin_icon(on_top))
+            pin_btn.setToolTip("取消置顶（恢复普通层级）" if on_top else "置顶（显示在所有应用上方）")
+
+        self._position_floating_controls(dock)
+        self._keep_pinned_dock_front()
+
+    def _init_layout_toolbar(self):
+        """布局控制工具栏：锁定尺寸、复原布局。"""
+        self.layout_toolbar = QToolBar("布局工具栏", self)
+        self.layout_toolbar.setObjectName("layoutToolbar")
+        self.layout_toolbar.setMovable(False)
+        self.layout_toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.layout_toolbar.setIconSize(QSize(14, 14))
+        self.addToolBar(Qt.TopToolBarArea, self.layout_toolbar)
+
+        self.lock_layout_action = QAction(self._build_lock_icon(False), "", self)
+        self.lock_layout_action.setCheckable(True)
+        self.lock_layout_action.setToolTip("锁定布局")
+        self.lock_layout_action.setStatusTip("锁定布局")
+        self.lock_layout_action.toggled.connect(self._set_layout_locked)
+        self.layout_toolbar.addAction(self.lock_layout_action)
+
+        restore_layout_action = QAction(self._build_restore_icon(), "", self)
+        restore_layout_action.setToolTip("复原布局")
+        restore_layout_action.setStatusTip("复原布局")
+        restore_layout_action.triggered.connect(self._restore_default_layout)
+        self.layout_toolbar.addAction(restore_layout_action)
+
+
+        self.layout_toolbar.addSeparator()
+
+    def _build_lock_icon(self, locked: bool) -> QIcon:
+        """绘制同一把锁的闭锁/开锁图标。"""
+        pixmap = QPixmap(14, 14)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        outline = QColor("#24406F")
+        fill = QColor("#DDE8FF")
+        painter.setPen(QPen(outline, 1.4))
+        painter.setBrush(QBrush(fill))
+        painter.drawRoundedRect(QRectF(3.2, 6.8, 7.6, 5.0), 1.2, 1.2)
+
+        painter.setBrush(Qt.NoBrush)
+        if locked:
+            # 闭锁：锁梁闭合
+            painter.drawArc(3, 1, 8, 8, 0, 180 * 16)
+        else:
+            # 开锁：锁梁向左上打开
+            painter.drawArc(1, 1, 8, 8, 35 * 16, 215 * 16)
+            painter.drawLine(QPointF(7.8, 5.0), QPointF(10.6, 3.6))
+
+        painter.end()
+        return QIcon(pixmap)
+
+    def _build_restore_icon(self) -> QIcon:
+        """绘制复原布局图标。"""
+        pixmap = QPixmap(14, 14)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        color = QColor("#24406F")
+        painter.setPen(QPen(color, 1.4))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawArc(2, 2, 10, 10, 35 * 16, 300 * 16)
+
+        painter.setBrush(QBrush(color))
+        arrow = QPolygonF([
+            QPointF(8.9, 1.7),
+            QPointF(12.0, 2.5),
+            QPointF(9.7, 4.5),
+        ])
+        painter.drawPolygon(arrow)
+
+        painter.end()
+        return QIcon(pixmap)
+
+
+    def _install_layer_switching(self):
+        """安装图层切换行为：点击任意面板即置顶。"""
+        docks = [self.control_dock, self.waveform_dock, self.raw_data_dock]
+        for dock in docks:
+            dock.installEventFilter(self)
+            if dock.widget() is not None:
+                dock.widget().installEventFilter(self)
+
+    def _bind_dock_signals(self):
+        """绑定Dock信号，动态处理合并页样式。"""
+        docks = [self.control_dock, self.waveform_dock, self.raw_data_dock]
+        for dock in docks:
+            dock.topLevelChanged.connect(lambda _f, d=dock: self._on_dock_top_level_changed(d))
+            dock.visibilityChanged.connect(lambda _v, d=dock: self._on_dock_visibility_changed(d))
+            dock.dockLocationChanged.connect(lambda a, d=dock: self._on_dock_layout_changed(d, a))
+
+        # Tab切换后同步样式，避免新合成页出现冗余标题/关闭UI
+        self.tabifiedDockWidgetActivated.connect(lambda _d: self._update_all_dock_chrome())
+        self._update_all_dock_chrome()
+
+    def _update_all_dock_chrome(self):
+        docks = [self.control_dock, self.waveform_dock, self.raw_data_dock]
+        for dock in docks:
+            self._update_dock_chrome(dock)
+
+    def _update_dock_chrome(self, dock: QDockWidget):
+        """始终使用系统标题栏，不在停靠态隐藏。"""
+        if dock is None:
+            return
+
+        if getattr(dock, '_default_title_bar', None) is None:
+            dock.setTitleBarWidget(None)
+        else:
+            dock.setTitleBarWidget(dock._default_title_bar)
+
+    def _on_dock_layout_changed(self, dock: QDockWidget, area=None):
+        """布局变化时同步样式并防止页面被挤压到不可操作状态。"""
+        if area is not None and area != Qt.NoDockWidgetArea:
+            dock._last_dock_area = area
+        self._update_dock_chrome(dock)
+        self._update_floating_controls_visibility(dock)
+        QTimer.singleShot(0, self._rebalance_collapsed_docks)
+
+    def _on_dock_top_level_changed(self, dock: QDockWidget):
+        """处理Dock浮动状态变化。"""
+        self.window_debug_print(
+            f"[WIN_DEBUG] top_level_changed dock={self._dock_tag(dock)} "
+            f"floating={dock.isFloating()} visible={dock.isVisible()}"
+        )
+        if dock.isFloating():
+            # 浮动态仅维护owner/transient，避免setWindowFlag触发布局重建回停靠。
+            self._set_dock_transient_parent(dock, None)
+            self._set_windows_owner(dock, None)
+        else:
+            if (self._pinned_dock is dock or getattr(dock, '_is_on_top', False)) and not self._reasserting_pinned_dock:
+                QTimer.singleShot(0, lambda d=dock: self._force_refloat_pinned_dock(d))
+                return
+            self._set_dock_transient_parent(dock, self)
+            self._set_windows_owner(dock, self)
+
+        self._update_dock_chrome(dock)
+        self._update_floating_controls_visibility(dock)
+        self._enforce_global_topmost()
+
+    def changeEvent(self, event):
+        """主窗口状态变化时，保持分离页独立可见且层级正确。"""
+        super().changeEvent(event)
+
+        if event.type() != QEvent.WindowStateChange:
+            return
+
+        if self.windowState() & Qt.WindowMinimized:
+            self.window_debug_print("[WIN_DEBUG] main_window minimized, enforce floating docks visible")
+            for dock in (self.control_dock, self.waveform_dock, self.raw_data_dock):
+                if not dock.isFloating():
+                    continue
+                dock.showNormal()
+                dock.raise_()
+                self._set_dock_transient_parent(dock, None)
+                self._set_windows_owner(dock, None)
+                should_top = bool(getattr(dock, '_is_on_top', False))
+                self._apply_windows_topmost(dock, should_top)
+
+    def _on_dock_visibility_changed(self, dock: QDockWidget):
+        """处理Dock可见性变化。"""
+        if getattr(self, '_handling_visibility_change', False):
+            return
+
+        self._handling_visibility_change = True
+        try:
+            self.window_debug_print(
+                f"[WIN_DEBUG] visibility_changed dock={self._dock_tag(dock)} "
+                f"floating={dock.isFloating()} visible={dock.isVisible()}"
+            )
+            self._update_dock_chrome(dock)
+            self._update_floating_controls_visibility(dock)
+            if self._pinned_dock is dock and dock.isFloating() and dock.isVisible():
+                self._keep_pinned_dock_front()
+            self._enforce_global_topmost()
+        finally:
+            self._handling_visibility_change = False
+
+    def _rebalance_collapsed_docks(self):
+        """当某个停靠页面被挤压过小时，恢复到可见可操作尺寸。"""
+        docks = [self.control_dock, self.waveform_dock, self.raw_data_dock]
+        collapsed = False
+        for dock in docks:
+            if dock.isFloating() or not dock.isVisible():
+                continue
+            if dock.width() < 120 or dock.height() < 90:
+                collapsed = True
+                break
+
+        if not collapsed:
+            return
+
+        self.resizeDocks([self.control_dock, self.waveform_dock], [380, 980], Qt.Horizontal)
+        self.resizeDocks([self.waveform_dock, self.raw_data_dock], [560, 240], Qt.Vertical)
+
+    def _bring_main_window_front(self):
+        """将主窗口置顶。"""
+        self.raise_()
+        self.activateWindow()
+        self._enforce_global_topmost()
+
+    def _bring_layer_to_front(self, dock: QDockWidget):
+        """将指定Dock层置顶。"""
+        if dock is None:
+            return
+
+        if not dock.isVisible():
+            dock.show()
+
+        if dock.isFloating():
+            dock.raise_()
+            dock.activateWindow()
+            self._keep_pinned_dock_front()
+            return
+
+        # 在停靠模式下，抬升当前Dock并聚焦，确保用户感知到“切到最上层”
+        dock.raise_()
+        dock.setFocus(Qt.OtherFocusReason)
+        self._update_dock_chrome(dock)
+
+    def eventFilter(self, obj, event):
+        """点击任意页面时自动切换到最上层。"""
+        if event.type() in (QEvent.Resize, QEvent.Move, QEvent.Show):
+            for dock in (self.control_dock, self.waveform_dock, self.raw_data_dock):
+                if obj is dock:
+                    self._position_floating_controls(dock)
+                    break
+
+        if event.type() in (QEvent.MouseButtonPress, QEvent.FocusIn):
+            mapping = (
+                (self.control_dock, self.control_dock.widget()),
+                (self.waveform_dock, self.waveform_dock.widget()),
+                (self.raw_data_dock, self.raw_data_dock.widget()),
+            )
+            for dock, widget in mapping:
+                if obj is dock or obj is widget:
+                    self._bring_layer_to_front(dock)
+                    self._keep_pinned_dock_front()
+                    break
+
+        return super().eventFilter(obj, event)
+
+    def _set_layout_locked(self, locked: bool):
+        """锁定/解锁布局：锁定后固定当前面板尺寸并禁止拖动分离。"""
+        self._layout_locked = locked
+        self.lock_layout_action.setIcon(self._build_lock_icon(locked))
+        self.lock_layout_action.setToolTip("解锁布局" if locked else "锁定布局")
+        self.lock_layout_action.setStatusTip("解锁布局" if locked else "锁定布局")
+        docks = [self.control_dock, self.waveform_dock, self.raw_data_dock]
+        for dock in docks:
+            if locked:
+                if dock.isFloating():
+                    size = dock.size()
+                    dock.setMinimumSize(size)
+                    dock.setMaximumSize(size)
+                else:
+                    area = self.dockWidgetArea(dock)
+                    if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                        width = max(200, dock.width())
+                        dock.setMinimumWidth(width)
+                        dock.setMaximumWidth(width)
+                    elif area in (Qt.TopDockWidgetArea, Qt.BottomDockWidgetArea):
+                        height = max(120, dock.height())
+                        dock.setMinimumHeight(height)
+                        dock.setMaximumHeight(height)
+
+                dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+            else:
+                dock.setMinimumSize(QSize(0, 0))
+                dock.setMaximumSize(QSize(16777215, 16777215))
+                dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+
+    def _restore_default_layout(self):
+        """一键恢复初始布局与尺寸。"""
+        if getattr(self, '_layout_locked', False):
+            self.lock_layout_action.setChecked(False)
+
+        self.restoreGeometry(self._default_geometry)
+        self.restoreState(self._default_dock_state)
+        self.resizeDocks([self.control_dock, self.waveform_dock], [380, 980], Qt.Horizontal)
+        self.resizeDocks([self.waveform_dock, self.raw_data_dock], [560, 240], Qt.Vertical)
+        self._update_all_dock_chrome()
+        self._enforce_global_topmost()
     
     def create_control_panel(self):
         """创建控制面板"""
@@ -773,7 +1601,7 @@ class MainWindow(QMainWindow):
         title_label = QLabel("控制面板")
         title_label.setFont(QFont("Arial", 14, QFont.Bold))
         title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
+       # layout.addWidget(title_label)
         
         # 数据源类型选择
         source_group = QGroupBox("数据源")
@@ -808,10 +1636,19 @@ class MainWindow(QMainWindow):
         self.tcp_group = QGroupBox("TCP配置")
         tcp_layout = QFormLayout()
 
+        self.tcp_mode_combo = QComboBox()
+        self.tcp_mode_combo.addItems(["监听", "主动连接"])
+        self.tcp_mode_combo.setCurrentText("监听")
+        self.tcp_mode_combo.currentTextChanged.connect(self.on_tcp_mode_changed)
         self.tcp_host_edit = QLineEdit("0.0.0.0")
         self.tcp_port_edit = QLineEdit("9999")
-        tcp_layout.addRow("监听地址:", self.tcp_host_edit)
-        tcp_layout.addRow("监听端口:", self.tcp_port_edit)
+        self.tcp_target_host_edit = QLineEdit("127.0.0.1")
+        self.tcp_target_port_edit = QLineEdit("9999")
+        tcp_layout.addRow("TCP模式:", self.tcp_mode_combo)
+        tcp_layout.addRow("本地地址:", self.tcp_host_edit)
+        tcp_layout.addRow("本地端口:", self.tcp_port_edit)
+        tcp_layout.addRow("目标地址:", self.tcp_target_host_edit)
+        tcp_layout.addRow("目标端口:", self.tcp_target_port_edit)
 
         self.tcp_group.setLayout(tcp_layout)
         self.tcp_group.setVisible(False)
@@ -847,7 +1684,7 @@ class MainWindow(QMainWindow):
         file_layout = QFormLayout()
 
         self.file_path_edit = QLineEdit()
-        self.file_path_edit.setPlaceholderText("选择 .log 或 .bin 文件")
+        self.file_path_edit.setPlaceholderText("选择 .log/.bin/.csv 文件")
         self.file_browse_btn = QPushButton("浏览...")
         self.file_browse_btn.clicked.connect(self.browse_input_file)
 
@@ -856,7 +1693,7 @@ class MainWindow(QMainWindow):
         file_path_layout.addWidget(self.file_browse_btn)
 
         self.file_protocol_combo = QComboBox()
-        self.file_protocol_combo.addItems(["文本协议", "Justfloat", "Rawdata"])
+        self.file_protocol_combo.addItems(["文本协议", "CSV", "Justfloat", "Rawdata"])
         self.file_protocol_combo.setCurrentText("文本协议")
         self.file_protocol_combo.currentTextChanged.connect(self.on_file_protocol_changed)
 
@@ -929,28 +1766,6 @@ class MainWindow(QMainWindow):
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
 
-        # 数据发送控制
-        send_group = QGroupBox("数据发送")
-        send_layout = QVBoxLayout()
-
-        self.send_edit = QLineEdit()
-        self.send_edit.setPlaceholderText("输入发送内容（文本模式会自动补换行）")
-        self.send_edit.returnPressed.connect(self.send_current_data)
-
-        self.send_btn = QPushButton("发送")
-        self.send_btn.clicked.connect(self.send_current_data)
-        self.send_btn.setEnabled(False)
-
-        self.send_result_label = QLabel("发送状态: 未发送")
-        self.send_result_label.setStyleSheet("color: #666;")
-
-        send_layout.addWidget(self.send_edit)
-        send_layout.addWidget(self.send_btn)
-        send_layout.addWidget(self.send_result_label)
-
-        send_group.setLayout(send_layout)
-        layout.addWidget(send_group)
-        
         # 通道配置组
         channel_group = QGroupBox("通道配置")
         channel_layout = QVBoxLayout()
@@ -978,7 +1793,7 @@ class MainWindow(QMainWindow):
         
         # 数据限制开关
         self.limit_data_checkbox = QCheckBox("限制数据点数")
-        self.limit_data_checkbox.setChecked(True)
+        self.limit_data_checkbox.setChecked(False)
         self.limit_data_checkbox.toggled.connect(self.toggle_limit_data)
         channel_layout.addWidget(self.limit_data_checkbox)
         
@@ -1049,7 +1864,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         
         # 原始数据接收区
-        raw_data_group = QGroupBox("原始数据接收区")
+        raw_data_group = QGroupBox("原始数据")
         raw_data_layout = QVBoxLayout()
         
         # 编码格式和显示格式选择
@@ -1065,7 +1880,7 @@ class MainWindow(QMainWindow):
         self.display_format_combo.addItems(["文本", "十六进制"])
         self.display_format_combo.setCurrentText("文本")
 
-        self.raw_data_enable_checkbox = QCheckBox("启用原始数据显示（会降低性能）")
+        self.raw_data_enable_checkbox = QCheckBox("原始数据")
         self.raw_data_enable_checkbox.setChecked(False)
         
         format_layout.addWidget(encoding_label)
@@ -1079,7 +1894,40 @@ class MainWindow(QMainWindow):
         self.raw_data_text = QTextEdit()
         self.raw_data_text.setReadOnly(True)
         self.raw_data_text.setStyleSheet("font-family: Consolas, monospace; font-size: 10pt;")
-        raw_data_layout.addWidget(self.raw_data_text)
+        
+        # 发送区域（与原始数据区放在一起，风格参考串口助手）
+        send_group = QGroupBox("发送区")
+        send_layout = QVBoxLayout()
+
+        self.send_edit = QTextEdit()
+        self.send_edit.setPlaceholderText("输入发送内容（Enter换行，Ctrl+Enter发送）")
+        self.send_edit.setMinimumHeight(90)
+
+        send_button_row = QHBoxLayout()
+        self.send_btn = QPushButton("发送")
+        self.send_btn.clicked.connect(self.send_current_data)
+        self.send_btn.setEnabled(False)
+        send_button_row.addWidget(self.send_btn)
+        send_button_row.addStretch()
+
+        self.send_result_label = QLabel("发送状态: 未发送")
+        self.send_result_label.setStyleSheet("color: #666;")
+
+        send_layout.addWidget(self.send_edit)
+        send_layout.addLayout(send_button_row)
+        send_layout.addWidget(self.send_result_label)
+        send_group.setLayout(send_layout)
+
+        # 使用分割器让“接收区/发送区”都可拖拽调节高度
+        io_splitter = QSplitter(Qt.Vertical)
+        io_splitter.addWidget(self.raw_data_text)
+        io_splitter.addWidget(send_group)
+        io_splitter.setStretchFactor(0, 7)
+        io_splitter.setStretchFactor(1, 3)
+        io_splitter.setChildrenCollapsible(False)
+        io_splitter.setHandleWidth(5)
+
+        raw_data_layout.addWidget(io_splitter)
         
         # 清空按钮
         clear_raw_data_btn = QPushButton("清空原始数据")
@@ -1116,7 +1964,7 @@ class MainWindow(QMainWindow):
         self.raw_data_update_timer.start(self.raw_data_update_interval)
         
         # 多线程架构
-        self.data_queue = queue.Queue(maxsize=300)  # 数据队列，限制积压延迟
+        self.data_queue = queue.Queue(maxsize=5000)  # 数据队列，文件回放场景下减少溢出丢帧
         self.stop_event = threading.Event()  # 停止事件
         self.receive_thread = None  # 数据接收线程
 
@@ -1252,11 +2100,18 @@ class MainWindow(QMainWindow):
         # 设置空格键快捷键为暂停/继续
         self.space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
         self.space_shortcut.activated.connect(self.toggle_pause)
+
+        # 发送快捷键：Ctrl+Enter发送，Enter保留换行
+        self.send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self.send_edit)
+        self.send_shortcut.activated.connect(self.send_current_data)
         
         # 设置初始UI状态
         self.on_source_type_changed(self.source_type_combo.currentText())
+        self.on_tcp_mode_changed(self.tcp_mode_combo.currentText())
         self.on_protocol_changed(self.protocol_combo.currentText())
         self.on_file_protocol_changed(self.file_protocol_combo.currentText())
+
+        self.waveform_widget.set_limit_data(self.limit_data_checkbox.isChecked())
 
     def _on_encoding_changed(self, text: str):
         """编码格式改变时更新缓存"""
@@ -1363,6 +2218,9 @@ class MainWindow(QMainWindow):
         """连接编排层：统一处理断开流程（不改业务语义）"""
         self._debug_ui_state_snapshot("before_disconnect_flow", event="disconnect")
         self._snapshot_justfloat_channel_names_before_disconnect()
+        # 断开时重置暂停状态，避免下次连接仍停在暂停显示
+        self.waveform_widget.is_paused = False
+        self.pause_btn.setText("暂停")
         # 先停止数据接收线程，避免访问已断开的数据源
         self.stop_receive_thread()
         # 再断开数据源连接
@@ -1372,8 +2230,8 @@ class MainWindow(QMainWindow):
         self.pause_btn.setEnabled(False)
         self.send_btn.setEnabled(False)
         self.send_result_label.setText("发送状态: 未发送")
-        # 启用数据源类型选择
-        self.source_type_combo.setEnabled(True)
+        # 断开后恢复配置编辑
+        self._set_connection_config_enabled(True)
         self.data_count = 0
         self.data_count_label.setText("接收数据: 0")
         self.perf_label.setText("速率: 接收 0/s | 处理 0/s | 队列 0 | 丢包 0 | 字节 0 B/s | 解析 0 us/帧")
@@ -1457,10 +2315,24 @@ class MainWindow(QMainWindow):
             return data_source, f"已连接到UDP {host}:{port}，数据校验头: {header}", None
 
         if source_type == "TCP":
-            host = self.tcp_host_edit.text()
-            port = int(self.tcp_port_edit.text())
-            data_source = create_tcp_source(host, port)
-            return data_source, f"已监听TCP {host}:{port}，协议: UDP同格式", None
+            mode_text = self.tcp_mode_combo.currentText()
+            local_host = self.tcp_host_edit.text()
+            local_port = int(self.tcp_port_edit.text())
+            target_host = self.tcp_target_host_edit.text().strip() or "127.0.0.1"
+            target_port = int(self.tcp_target_port_edit.text())
+
+            if mode_text == "主动连接":
+                data_source = create_tcp_source(
+                    host=local_host,
+                    port=local_port,
+                    mode='client',
+                    peer_host=target_host,
+                    peer_port=target_port,
+                )
+                return data_source, f"已连接TCP服务端 {target_host}:{target_port}，协议: UDP同格式", None
+
+            data_source = create_tcp_source(host=local_host, port=local_port, mode='server')
+            return data_source, f"已监听TCP {local_host}:{local_port}，协议: UDP同格式", None
 
         if source_type == "串口":
             serial_port = self.serial_port_combo.currentData()  # 获取实际的串口号（如COM1）
@@ -1496,12 +2368,12 @@ class MainWindow(QMainWindow):
         # 文件数据源
         file_path = self.file_path_edit.text().strip()
         if not file_path or not os.path.isfile(file_path):
-            QMessageBox.warning(self, "错误", "请选择有效的 .log 或 .bin 文件")
+            QMessageBox.warning(self, "错误", "请选择有效的 .log/.bin/.csv 文件")
             return None, None, None
 
         ext = os.path.splitext(file_path)[1].lower()
-        if ext not in ('.log', '.bin'):
-            QMessageBox.warning(self, "错误", "仅支持 .log 或 .bin 文件")
+        if ext not in ('.log', '.bin', '.csv'):
+            QMessageBox.warning(self, "错误", "仅支持 .log/.bin/.csv 文件")
             return None, None, None
 
         protocol_text = self.file_protocol_combo.currentText()
@@ -1510,6 +2382,13 @@ class MainWindow(QMainWindow):
             file_header = header
             data_source = create_file_source(file_path, protocol, file_header)
             return data_source, f"已连接到文件 {file_path}，协议: {protocol_text}，数据校验头: {file_header}", None
+
+        if protocol_text == 'CSV':
+            if ext != '.csv':
+                QMessageBox.warning(self, "错误", "CSV协议仅支持 .csv 文件")
+                return None, None, None
+            data_source = create_file_source(file_path, 'csv', '')
+            return data_source, f"已连接到文件 {file_path}，协议: {protocol_text}（需与导出CSV表头一致）", None
 
         if protocol_text == 'Justfloat':
             protocol = 'justfloat'
@@ -1553,10 +2432,13 @@ class MainWindow(QMainWindow):
                 self.log_print(success_log)
                 self.status_label.setText("已连接")
                 self.status_label.setStyleSheet("color: green;")
+                # 每次连接都恢复为“继续接收显示”状态
+                self.waveform_widget.is_paused = False
+                self.pause_btn.setText("暂停")
                 self.pause_btn.setEnabled(True)
                 self.send_btn.setEnabled(source_type in ("UDP", "TCP", "串口"))
-                # 禁用数据源类型选择
-                self.source_type_combo.setEnabled(False)
+                # 连接后锁定配置，防止运行中误改
+                self._set_connection_config_enabled(False)
                 # 启动数据接收线程
                 self.start_receive_thread()
 
@@ -1607,6 +2489,7 @@ class MainWindow(QMainWindow):
             self.header_group.setEnabled(True)
             self.justfloat_group.setVisible(False)
             self.header_group.setVisible(True)
+            self.on_tcp_mode_changed(self.tcp_mode_combo.currentText())
             return
 
         if source_type == "串口":
@@ -1688,16 +2571,35 @@ class MainWindow(QMainWindow):
         """文件协议改变事件处理。"""
         self._apply_protocol_ui(protocol_text)
 
+    def on_tcp_mode_changed(self, mode_text: str):
+        """TCP模式切换：监听/主动连接。"""
+        is_client = (mode_text == "主动连接")
+
+        self.tcp_host_edit.setEnabled(not is_client)
+        self.tcp_port_edit.setEnabled(not is_client)
+        self.tcp_target_host_edit.setEnabled(is_client)
+        self.tcp_target_port_edit.setEnabled(is_client)
+
     def browse_input_file(self):
-        """浏览输入数据文件（.log/.bin）。"""
+        """浏览输入数据文件（.log/.bin/.csv）。"""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "选择数据文件",
             self.file_path_edit.text() or os.getcwd(),
-            "数据文件 (*.log *.bin);;所有文件 (*)",
+            "数据文件 (*.log *.bin *.csv);;所有文件 (*)",
         )
         if file_path:
             self.file_path_edit.setText(file_path)
+
+    def _set_connection_config_enabled(self, enabled: bool):
+        """统一控制连接相关配置项是否可编辑。"""
+        self.source_type_combo.setEnabled(enabled)
+        self.udp_group.setEnabled(enabled)
+        self.tcp_group.setEnabled(enabled)
+        self.serial_group.setEnabled(enabled)
+        self.file_group.setEnabled(enabled)
+        self.header_group.setEnabled(enabled)
+        self.justfloat_group.setEnabled(enabled)
 
     def send_current_data(self):
         """通过当前数据源发送文本数据。"""
@@ -1706,7 +2608,7 @@ class MainWindow(QMainWindow):
             self.send_result_label.setStyleSheet("color: red;")
             return
 
-        text = self.send_edit.text()
+        text = self.send_edit.toPlainText()
         if not text:
             return
 
@@ -1728,10 +2630,34 @@ class MainWindow(QMainWindow):
             self.send_result_label.setText("发送状态: 成功")
             self.send_result_label.setStyleSheet("color: green;")
             self.log_print(f"[发送] {source_type} 发送成功: {text}")
+            self._append_tx_to_raw_data_view(text)
         else:
             self.send_result_label.setText("发送状态: 失败（当前源不支持或目标不可达）")
             self.send_result_label.setStyleSheet("color: red;")
             self.log_print(f"[发送] {source_type} 发送失败: {text}")
+
+    def _append_tx_to_raw_data_view(self, text: str):
+        """在原始数据区追加发送内容，带TX标识。"""
+        timestamp = QDateTime.currentDateTime().toString("HH:mm:ss.zzz")
+        lines = text.splitlines() or [""]
+        tx_text = "\n".join([f"[TX][{timestamp}] {line}" for line in lines])
+        self.raw_data_text.append(tx_text)
+        self._trim_raw_data_text_lines()
+
+    def _trim_raw_data_text_lines(self):
+        """限制原始数据区最大行数，避免内存占用持续增长。"""
+        max_lines = 1000
+        document = self.raw_data_text.document()
+        if document.blockCount() <= max_lines:
+            return
+
+        cursor = self.raw_data_text.textCursor()
+        cursor.movePosition(cursor.Start)
+        cursor.movePosition(cursor.Down, cursor.KeepAnchor, document.blockCount() - max_lines)
+        cursor.removeSelectedText()
+
+        scrollbar = self.raw_data_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
     
     def on_justfloat_mode_changed(self, mode_text: str):
         """Justfloat模式改变事件处理
@@ -1858,18 +2784,8 @@ class MainWindow(QMainWindow):
             self.raw_data_buffer.clear()
             self.raw_data_text.append(all_text)
             
-            # 限制显示行数，避免内存占用过大
-            max_lines = 1000
-            document = self.raw_data_text.document()
-            if document.blockCount() > max_lines:
-                cursor = self.raw_data_text.textCursor()
-                cursor.movePosition(cursor.Start)
-                cursor.movePosition(cursor.Down, cursor.KeepAnchor, document.blockCount() - max_lines)
-                cursor.removeSelectedText()
-            
-            # 自动滚动到底部
-            scrollbar = self.raw_data_text.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
+            # 限制行数并滚动到底部
+            self._trim_raw_data_text_lines()
         except Exception as e:
             self.log_print(f"刷新原始数据缓冲区失败: {e}")
     

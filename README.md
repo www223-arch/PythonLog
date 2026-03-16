@@ -70,6 +70,12 @@ python tools/udp_sender.py --type sine --channels 3 --frequency 1.0 --duration 1
 
 # 边发UDP边实时追加到文件（用于“文件源”实时读取联调）
 python tools/udp_sender.py --type sine --duration 30 --dump-log data/live_udp.log
+
+# 启用UDP接收调试（文本显示）
+python tools/udp_sender.py --type sine --duration 10 --recv --recv-port 8889 --recv-format text
+
+# 启用UDP接收调试（十六进制显示）
+python tools/udp_sender.py --type sine --duration 10 --recv --recv-port 8889 --recv-format hex
 ```
 
 ### 3. TCP 测试发送（与 UDP 发送器风格一致）
@@ -91,6 +97,12 @@ python tools/tcp_sender.py --type sine --channels 3 --duration 10 --names 电压
 
 # 边发TCP边实时追加到文件（用于“文件源”实时读取联调）
 python tools/tcp_sender.py --host 127.0.0.1 --port 9999 --type sine --duration 30 --dump-log data/live_tcp.log
+
+# 启用TCP接收调试（文本显示）
+python tools/tcp_sender.py --host 127.0.0.1 --port 9999 --type sine --duration 10 --recv --recv-format text
+
+# 启用TCP接收调试（十六进制显示）
+python tools/tcp_sender.py --host 127.0.0.1 --port 9999 --type sine --duration 10 --recv --recv-format hex
 ```
 
 ### 4. 生成文件测试流程（.log / .bin）
@@ -131,10 +143,17 @@ python tools/generate_test_files.py --format bin --rate 100 --type sine --with-t
 ### 数据源配置
 - 数据源类型可选 UDP、TCP、串口、文件。
 - UDP 默认监听地址 `0.0.0.0`，端口 `8888`。
-- TCP 默认监听地址 `0.0.0.0`，端口 `9999`。
+- TCP 支持两种模式：监听、主动连接。
+- TCP 监听模式默认地址 `0.0.0.0`，端口 `9999`。
+- TCP 主动连接模式默认目标 `127.0.0.1:9999`。
 - 串口可配置端口、波特率、协议类型。
 - 文件可选择 `.log/.bin` 并配置协议类型。
 - 文本协议可配置数据校验头，默认 `DATA`。
+
+### 两个exe的TCP互通
+- 实例A：选择 `TCP`，模式选 `监听`，端口如 `9999`，点击连接。
+- 实例B：选择 `TCP`，模式选 `主动连接`，目标填 `A的IP:9999`，点击连接。
+- 连接建立后，A/B都可在发送区互发并在接收区看到数据。
 
 ### 数据发送
 - 发送入口位于控制面板“数据发送”区域。
