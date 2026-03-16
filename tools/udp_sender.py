@@ -124,7 +124,7 @@ class UDPSender:
         self.is_running = True
         self.start_receiver()
         start_time = time.time()
-        sample_rate = 5000
+        sample_rate = 1000
           # 采样率
         
         # 使用自定义通道名称，如果没有则使用默认
@@ -247,9 +247,11 @@ class UDPSender:
 
 def main():
     """主函数"""
+    #192.168.114.238
+    #127.0.0.1
     parser = argparse.ArgumentParser(description='UDP数据发送工具')
-    parser.add_argument('--host', type=str, default='192.168.114.238', 
-                       help='目标主机地址 (默认: 192.168.114.238)')
+    parser.add_argument('--host', type=str, default='127.0.0.1', 
+                       help='目标主机地址 (默认: 127.0.0.1)')
     parser.add_argument('--port', type=int, default=8888, 
                        help='目标端口 (默认: 8888)')
     parser.add_argument('--type', type=str, choices=['sine', 'random'], 

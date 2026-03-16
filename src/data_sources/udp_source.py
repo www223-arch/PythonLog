@@ -43,6 +43,8 @@ class UDPDataSource(DataSource):
         """
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # 允许UDP广播发送（如255.255.255.255）
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             self.socket.bind((self.host, self.port))
             self.socket.settimeout(0.001)  # 设置超时时间为1ms（非阻塞）
             self.is_connected = True

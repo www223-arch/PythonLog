@@ -81,6 +81,10 @@ class DataReceiveThread(QThread):
                     # 将数据放入队列
                     data_queue.put(frame, block=False)
                     self.recv_ok_count += 1
+                    # 文件回放源在本地磁盘读取速度可能远高于UI消费速度，
+                    # 轻微限流避免队列抖动丢帧导致波形“长直线跨点”。
+                    if getattr(source, 'port', None) == 'FILE':
+                        time.sleep(0.0005)
                 else:
                     # 无数据时短暂休眠，降低CPU占用并减少对UI线程抢占
                     time.sleep(0.0002)
@@ -856,7 +860,7 @@ class MainWindow(QMainWindow):
         file_layout = QFormLayout()
 
         self.file_path_edit = QLineEdit()
-        self.file_path_edit.setPlaceholderText("选择 .log 或 .bin 文件")
+        self.file_path_edit.setPlaceholderText("选择 .log/.bin/.csv 文件")
         self.file_browse_btn = QPushButton("浏览...")
         self.file_browse_btn.clicked.connect(self.browse_input_file)
 
@@ -865,7 +869,7 @@ class MainWindow(QMainWindow):
         file_path_layout.addWidget(self.file_browse_btn)
 
         self.file_protocol_combo = QComboBox()
-        self.file_protocol_combo.addItems(["文本协议", "Justfloat", "Rawdata"])
+        self.file_protocol_combo.addItems(["文本协议", "CSV", "Justfloat", "Rawdata"])
         self.file_protocol_combo.setCurrentText("文本协议")
         self.file_protocol_combo.currentTextChanged.connect(self.on_file_protocol_changed)
 
@@ -1136,7 +1140,7 @@ class MainWindow(QMainWindow):
         self.raw_data_update_timer.start(self.raw_data_update_interval)
         
         # 多线程架构
-        self.data_queue = queue.Queue(maxsize=300)  # 数据队列，限制积压延迟
+        self.data_queue = queue.Queue(maxsize=5000)  # 数据队列，文件回放场景下减少溢出丢帧
         self.stop_event = threading.Event()  # 停止事件
         self.receive_thread = None  # 数据接收线程
 
@@ -1390,6 +1394,9 @@ class MainWindow(QMainWindow):
         """连接编排层：统一处理断开流程（不改业务语义）"""
         self._debug_ui_state_snapshot("before_disconnect_flow", event="disconnect")
         self._snapshot_justfloat_channel_names_before_disconnect()
+        # 断开时重置暂停状态，避免下次连接仍停在暂停显示
+        self.waveform_widget.is_paused = False
+        self.pause_btn.setText("暂停")
         # 先停止数据接收线程，避免访问已断开的数据源
         self.stop_receive_thread()
         # 再断开数据源连接
@@ -1399,8 +1406,8 @@ class MainWindow(QMainWindow):
         self.pause_btn.setEnabled(False)
         self.send_btn.setEnabled(False)
         self.send_result_label.setText("发送状态: 未发送")
-        # 启用数据源类型选择
-        self.source_type_combo.setEnabled(True)
+        # 断开后恢复配置编辑
+        self._set_connection_config_enabled(True)
         self.data_count = 0
         self.data_count_label.setText("接收数据: 0")
         self.perf_label.setText("速率: 接收 0/s | 处理 0/s | 队列 0 | 丢包 0 | 字节 0 B/s | 解析 0 us/帧")
@@ -1537,12 +1544,12 @@ class MainWindow(QMainWindow):
         # 文件数据源
         file_path = self.file_path_edit.text().strip()
         if not file_path or not os.path.isfile(file_path):
-            QMessageBox.warning(self, "错误", "请选择有效的 .log 或 .bin 文件")
+            QMessageBox.warning(self, "错误", "请选择有效的 .log/.bin/.csv 文件")
             return None, None, None
 
         ext = os.path.splitext(file_path)[1].lower()
-        if ext not in ('.log', '.bin'):
-            QMessageBox.warning(self, "错误", "仅支持 .log 或 .bin 文件")
+        if ext not in ('.log', '.bin', '.csv'):
+            QMessageBox.warning(self, "错误", "仅支持 .log/.bin/.csv 文件")
             return None, None, None
 
         protocol_text = self.file_protocol_combo.currentText()
@@ -1551,6 +1558,13 @@ class MainWindow(QMainWindow):
             file_header = header
             data_source = create_file_source(file_path, protocol, file_header)
             return data_source, f"已连接到文件 {file_path}，协议: {protocol_text}，数据校验头: {file_header}", None
+
+        if protocol_text == 'CSV':
+            if ext != '.csv':
+                QMessageBox.warning(self, "错误", "CSV协议仅支持 .csv 文件")
+                return None, None, None
+            data_source = create_file_source(file_path, 'csv', '')
+            return data_source, f"已连接到文件 {file_path}，协议: {protocol_text}（需与导出CSV表头一致）", None
 
         if protocol_text == 'Justfloat':
             protocol = 'justfloat'
@@ -1594,10 +1608,13 @@ class MainWindow(QMainWindow):
                 self.log_print(success_log)
                 self.status_label.setText("已连接")
                 self.status_label.setStyleSheet("color: green;")
+                # 每次连接都恢复为“继续接收显示”状态
+                self.waveform_widget.is_paused = False
+                self.pause_btn.setText("暂停")
                 self.pause_btn.setEnabled(True)
                 self.send_btn.setEnabled(source_type in ("UDP", "TCP", "串口"))
-                # 禁用数据源类型选择
-                self.source_type_combo.setEnabled(False)
+                # 连接后锁定配置，防止运行中误改
+                self._set_connection_config_enabled(False)
                 # 启动数据接收线程
                 self.start_receive_thread()
 
@@ -1740,15 +1757,25 @@ class MainWindow(QMainWindow):
         self.tcp_target_port_edit.setEnabled(is_client)
 
     def browse_input_file(self):
-        """浏览输入数据文件（.log/.bin）。"""
+        """浏览输入数据文件（.log/.bin/.csv）。"""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "选择数据文件",
             self.file_path_edit.text() or os.getcwd(),
-            "数据文件 (*.log *.bin);;所有文件 (*)",
+            "数据文件 (*.log *.bin *.csv);;所有文件 (*)",
         )
         if file_path:
             self.file_path_edit.setText(file_path)
+
+    def _set_connection_config_enabled(self, enabled: bool):
+        """统一控制连接相关配置项是否可编辑。"""
+        self.source_type_combo.setEnabled(enabled)
+        self.udp_group.setEnabled(enabled)
+        self.tcp_group.setEnabled(enabled)
+        self.serial_group.setEnabled(enabled)
+        self.file_group.setEnabled(enabled)
+        self.header_group.setEnabled(enabled)
+        self.justfloat_group.setEnabled(enabled)
 
     def send_current_data(self):
         """通过当前数据源发送文本数据。"""

@@ -302,6 +302,82 @@ class ManagerLayeringRegressionTests(unittest.TestCase):
             self.assertEqual(frame2['channels']['a'], 2.5)
             manager.disconnect()
 
+    def test_file_csv_source_replay_matches_export_schema(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_path = os.path.join(tmp_dir, 'demo.csv')
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('时间戳,ch1,ch2\n')
+                f.write('1.0,3.5,4.5\n')
+
+            manager = DataSourceManager()
+            src = create_file_source(file_path, protocol='csv')
+            self.assertTrue(manager.set_source(src))
+
+            frame = manager.read_frame()
+            self.assertIsNotNone(frame)
+            self.assertEqual(frame['channels']['ch1'], 3.5)
+            self.assertEqual(frame['channels']['ch2'], 4.5)
+            manager.disconnect()
+
+    def test_file_csv_source_timestamp_keeps_export_millisecond_scale(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_path = os.path.join(tmp_dir, 'ts.csv')
+            with open(file_path, 'w', encoding='utf-8') as f:
+                # 模拟DataSaver导出：时间戳列为毫秒
+                f.write('时间戳,ch1\n')
+                f.write('1000,1.25\n')
+
+            manager = DataSourceManager()
+            src = create_file_source(file_path, protocol='csv')
+            self.assertTrue(manager.set_source(src))
+
+            frame = manager.read_frame()
+            self.assertIsNotNone(frame)
+            # read_frame对外统一是毫秒，这里应保持1000而非被放大到1_000_000
+            self.assertAlmostEqual(frame['timestamp'], 1000.0, places=6)
+            manager.disconnect()
+
+    def test_file_csv_source_invalid_header_reports_format_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_path = os.path.join(tmp_dir, 'bad.csv')
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('wrong,ch1\n')
+                f.write('1.0,3.5\n')
+
+            manager = DataSourceManager()
+            src = create_file_source(file_path, protocol='csv')
+            self.assertTrue(manager.set_source(src))
+
+            frame = manager.read_frame()
+            self.assertIsNotNone(frame)
+            self.assertTrue(frame.get('meta', {}).get('format_error'))
+            manager.disconnect()
+
+    def test_file_csv_source_replay_reads_all_rows(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_path = os.path.join(tmp_dir, 'many.csv')
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('时间戳,ch1\n')
+                for i in range(100):
+                    f.write(f'{i * 10}, {float(i)}\n')
+
+            manager = DataSourceManager()
+            src = create_file_source(file_path, protocol='csv')
+            self.assertTrue(manager.set_source(src))
+
+            count = 0
+            while True:
+                frame = manager.read_frame()
+                if frame is None:
+                    break
+                if frame.get('meta', {}).get('format_error'):
+                    self.fail('CSV读取过程中不应出现format_error')
+                count += 1
+
+            self.assertEqual(count, 100)
+            self.assertTrue(src.is_connected)
+            manager.disconnect()
+
 
 if __name__ == '__main__':
     unittest.main()
