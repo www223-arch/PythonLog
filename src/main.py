@@ -1113,7 +1113,7 @@ QDockWidget::float-button {
         except Exception:
             pass
 
-    def _apply_windows_topmost(self, widget: QWidget, on_top: bool):
+    def _apply_windows_topmost(self, widget: QWidget, on_top: bool, aggressive: bool = False):
         """Windows下使用原生API设置窗口是否置于所有应用上方。"""
         if os.name != 'nt' or widget is None:
             return
@@ -1130,33 +1130,45 @@ QDockWidget::float-button {
             SWP_NOOWNERZORDER = 0x0200
             SWP_NOACTIVATE = 0x0010
             SWP_SHOWWINDOW = 0x0040
-            flags_on = SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW
+            flags_on_soft = SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_NOACTIVATE
+            flags_on_hard = SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW
             flags_off = SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_NOACTIVATE
 
-            # 对置顶使用“先降后升”策略，提升在系统中的层级重排成功率。
             if on_top:
-                ctypes.windll.user32.SetWindowPos(
-                    hwnd,
-                    HWND_NOTOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    flags_on,
-                )
-                ctypes.windll.user32.SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    flags_on,
-                )
-                try:
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-                except Exception:
-                    pass
+                if aggressive:
+                    # 仅在用户显式置顶等关键时机做强置顶，避免高频守护导致闪烁。
+                    ctypes.windll.user32.SetWindowPos(
+                        hwnd,
+                        HWND_NOTOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        flags_on_hard,
+                    )
+                    ctypes.windll.user32.SetWindowPos(
+                        hwnd,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        flags_on_hard,
+                    )
+                    try:
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    except Exception:
+                        pass
+                else:
+                    ctypes.windll.user32.SetWindowPos(
+                        hwnd,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        flags_on_soft,
+                    )
             else:
                 ctypes.windll.user32.SetWindowPos(
                     hwnd,
@@ -1167,7 +1179,7 @@ QDockWidget::float-button {
                     0,
                     flags_off,
                 )
-            self.window_debug_print(f"[WIN_DEBUG] win32_topmost hwnd={hwnd} on_top={on_top}")
+            self.window_debug_print(f"[WIN_DEBUG] win32_topmost hwnd={hwnd} on_top={on_top} aggressive={aggressive}")
         except Exception:
             pass
 
@@ -1205,7 +1217,7 @@ QDockWidget::float-button {
 
         dock.raise_()
         if os.name == 'nt':
-            self._apply_windows_topmost(dock, True)
+            self._apply_windows_topmost(dock, True, aggressive=False)
 
     def _force_refloat_pinned_dock(self, dock: QDockWidget):
         """防止已钉住页面被系统/布局回收到主窗口停靠态。"""
@@ -1225,7 +1237,7 @@ QDockWidget::float-button {
             self._set_dock_transient_parent(dock, None)
             self._set_windows_owner(dock, None)
             if os.name == 'nt':
-                self._apply_windows_topmost(dock, True)
+                self._apply_windows_topmost(dock, True, aggressive=True)
             dock.raise_()
             dock.activateWindow()
             self._pinned_dock = dock
@@ -1238,12 +1250,12 @@ QDockWidget::float-button {
             return
 
         if os.name == 'nt':
-            self._apply_windows_topmost(self, True)
+            self._apply_windows_topmost(self, True, aggressive=False)
             pinned = getattr(self, '_pinned_dock', None)
             for dock in (self.control_dock, self.waveform_dock, self.raw_data_dock):
                 if dock.isFloating() and dock.isVisible():
                     should_top = bool(pinned is dock or getattr(dock, '_is_on_top', False))
-                    self._apply_windows_topmost(dock, should_top)
+                    self._apply_windows_topmost(dock, should_top, aggressive=False)
         else:
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
             self.show()
@@ -1292,7 +1304,7 @@ QDockWidget::float-button {
         if not isinstance(dock, QDockWidget):
             self._apply_qt_topmost_flag(dock, should_top)
         if os.name == 'nt':
-            self._apply_windows_topmost(dock, should_top)
+            self._apply_windows_topmost(dock, should_top, aggressive=should_top)
         else:
             if not isinstance(dock, QDockWidget):
                 dock.setWindowFlag(Qt.WindowStaysOnTopHint, should_top)
