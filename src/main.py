@@ -14,8 +14,8 @@ import threading
 import time
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut, QComboBox, QTextEdit, QSplitter, QInputDialog)
-from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize, QThread, pyqtSignal
+                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QColorDialog, QMenu, QAction, QShortcut, QComboBox, QTextEdit, QSplitter, QInputDialog, QDockWidget, QToolBar)
+from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize, QThread, pyqtSignal, QEvent
 from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QRadialGradient, QKeySequence
 
 from data_sources.manager import (
@@ -728,45 +728,184 @@ class MainWindow(QMainWindow):
         """初始化UI"""
         self.setWindowTitle("Python上位机 - 数据采集")
         self.setGeometry(100, 100, 1400, 800)
-        
-        # 创建中央控件
-        central_widget = QWidget()
-        main_layout = QHBoxLayout()
-        
-        # 左侧控制面板
+
+        # 启用Dock布局：支持拖拽、分离、复位
+        self.setDockNestingEnabled(True)
+        self.setDockOptions(
+            QMainWindow.AllowNestedDocks |
+            QMainWindow.AllowTabbedDocks |
+            QMainWindow.AnimatedDocks |
+            QMainWindow.GroupedDragging
+        )
+
+        # 主面板
         control_panel = self.create_control_panel()
-        
-        # 右侧面板（使用QSplitter支持调整大小）
-        right_splitter = QSplitter(Qt.Vertical)
-        
-        # 右侧上部：波形显示
         self.waveform_widget = WaveformWidget()
-        
-        # 右侧下部：原始数据接收区
         raw_data_panel = self.create_raw_data_panel()
-        
-        # 添加到分割器
-        right_splitter.addWidget(self.waveform_widget)
-        right_splitter.addWidget(raw_data_panel)
-        
-        # 设置初始比例（波形显示占70%，原始数据接收区占30%）
-        right_splitter.setStretchFactor(0, 7)
-        right_splitter.setStretchFactor(1, 3)
-        
-        # 设置最小尺寸，防止一个被压缩消失
-        right_splitter.setChildrenCollapsible(False)  # 禁止折叠
-        right_splitter.setHandleWidth(5)  # 设置分割线宽度
-        
-        # 设置子控件的最小尺寸
-        self.waveform_widget.setMinimumSize(QSize(200, 200))  # 波形显示最小尺寸
-        raw_data_panel.setMinimumSize(QSize(200, 100))  # 原始数据接收区最小尺寸
-        
-        # 添加到主布局
-        main_layout.addWidget(control_panel, 1)
-        main_layout.addWidget(right_splitter, 3)
-        
-        central_widget.setLayout(main_layout)
-        self.setCentralWidget(central_widget)
+
+        self.control_dock = self._create_panel_dock("控制面板", "dock_control", control_panel, Qt.LeftDockWidgetArea)
+        self.waveform_dock = self._create_panel_dock("波形区", "dock_waveform", self.waveform_widget, Qt.LeftDockWidgetArea)
+        self.raw_data_dock = self._create_panel_dock("原始数据与发送", "dock_raw_data", raw_data_panel, Qt.LeftDockWidgetArea)
+
+        # 默认布局：左控制，右上波形，右下原始数据/发送（覆盖整个工作区，避免中央空白区）
+        self.splitDockWidget(self.control_dock, self.waveform_dock, Qt.Horizontal)
+        self.splitDockWidget(self.waveform_dock, self.raw_data_dock, Qt.Vertical)
+        self.resizeDocks([self.control_dock, self.waveform_dock], [380, 980], Qt.Horizontal)
+        self.resizeDocks([self.waveform_dock, self.raw_data_dock], [560, 240], Qt.Vertical)
+
+        # 工具栏：锁定尺寸 + 一键复原
+        self._init_layout_toolbar()
+        self._install_layer_switching()
+        self._layout_locked = False
+
+        # 自定义样式：避免呆板文本按钮风格
+        self.setStyleSheet(self.styleSheet() + """
+QDockWidget::title {
+    text-align: left;
+    padding: 6px 10px;
+    color: #1F2A44;
+    font-weight: 600;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #DDE8FF, stop:1 #C7DAFF);
+    border-bottom: 1px solid #B5C8ED;
+}
+QToolBar#layoutToolbar {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #F5FAFF, stop:1 #EAF4FF);
+    border: 1px solid #C8D9F2;
+    spacing: 8px;
+    padding: 4px;
+}
+QToolBar#layoutToolbar QToolButton {
+    border: 1px solid #9CB8E6;
+    border-radius: 8px;
+    background: #FFFFFF;
+    color: #24406F;
+    padding: 6px 12px;
+    font-weight: 600;
+}
+QToolBar#layoutToolbar QToolButton:checked {
+    background: #2E6CE6;
+    color: #FFFFFF;
+    border-color: #2E6CE6;
+}
+QToolBar#layoutToolbar QToolButton:hover {
+    background: #EAF2FF;
+}
+""")
+
+        # 保存默认布局，供一键复原
+        self._default_geometry = self.saveGeometry()
+        self._default_dock_state = self.saveState()
+
+    def _create_panel_dock(self, title: str, object_name: str, widget: QWidget, area) -> QDockWidget:
+        """创建可拖拽/可分离的Dock面板。"""
+        dock = QDockWidget(title, self)
+        dock.setObjectName(object_name)
+        dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        dock.setWidget(widget)
+        self.addDockWidget(area, dock)
+        return dock
+
+    def _init_layout_toolbar(self):
+        """布局控制工具栏：锁定尺寸、复原布局。"""
+        self.layout_toolbar = QToolBar("布局工具栏", self)
+        self.layout_toolbar.setObjectName("layoutToolbar")
+        self.layout_toolbar.setMovable(False)
+        self.addToolBar(Qt.TopToolBarArea, self.layout_toolbar)
+
+        self.lock_layout_action = QAction("锁定布局", self)
+        self.lock_layout_action.setCheckable(True)
+        self.lock_layout_action.toggled.connect(self._set_layout_locked)
+        self.layout_toolbar.addAction(self.lock_layout_action)
+
+        restore_layout_action = QAction("一键复原布局", self)
+        restore_layout_action.triggered.connect(self._restore_default_layout)
+        self.layout_toolbar.addAction(restore_layout_action)
+
+        self.layout_toolbar.addSeparator()
+
+
+    def _install_layer_switching(self):
+        """安装图层切换行为：点击任意面板即置顶。"""
+        docks = [self.control_dock, self.waveform_dock, self.raw_data_dock]
+        for dock in docks:
+            dock.installEventFilter(self)
+            if dock.widget() is not None:
+                dock.widget().installEventFilter(self)
+
+    def _bring_main_window_front(self):
+        """将主窗口置顶。"""
+        self.raise_()
+        self.activateWindow()
+
+    def _bring_layer_to_front(self, dock: QDockWidget):
+        """将指定Dock层置顶。"""
+        if dock is None:
+            return
+
+        if not dock.isVisible():
+            dock.show()
+
+        if dock.isFloating():
+            dock.raise_()
+            dock.activateWindow()
+            return
+
+        # 在停靠模式下，抬升当前Dock并聚焦，确保用户感知到“切到最上层”
+        dock.raise_()
+        dock.setFocus(Qt.OtherFocusReason)
+
+    def eventFilter(self, obj, event):
+        """点击任意页面时自动切换到最上层。"""
+        if event.type() in (QEvent.MouseButtonPress, QEvent.FocusIn):
+            mapping = (
+                (self.control_dock, self.control_dock.widget()),
+                (self.waveform_dock, self.waveform_dock.widget()),
+                (self.raw_data_dock, self.raw_data_dock.widget()),
+            )
+            for dock, widget in mapping:
+                if obj is dock or obj is widget:
+                    self._bring_layer_to_front(dock)
+                    break
+
+        return super().eventFilter(obj, event)
+
+    def _set_layout_locked(self, locked: bool):
+        """锁定/解锁布局：锁定后固定当前面板尺寸并禁止拖动分离。"""
+        self._layout_locked = locked
+        docks = [self.control_dock, self.waveform_dock, self.raw_data_dock]
+        for dock in docks:
+            if locked:
+                if dock.isFloating():
+                    size = dock.size()
+                    dock.setMinimumSize(size)
+                    dock.setMaximumSize(size)
+                else:
+                    area = self.dockWidgetArea(dock)
+                    if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                        width = max(200, dock.width())
+                        dock.setMinimumWidth(width)
+                        dock.setMaximumWidth(width)
+                    elif area in (Qt.TopDockWidgetArea, Qt.BottomDockWidgetArea):
+                        height = max(120, dock.height())
+                        dock.setMinimumHeight(height)
+                        dock.setMaximumHeight(height)
+
+                dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+            else:
+                dock.setMinimumSize(QSize(0, 0))
+                dock.setMaximumSize(QSize(16777215, 16777215))
+                dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+
+    def _restore_default_layout(self):
+        """一键恢复初始布局与尺寸。"""
+        if getattr(self, '_layout_locked', False):
+            self.lock_layout_action.setChecked(False)
+
+        self.restoreGeometry(self._default_geometry)
+        self.restoreState(self._default_dock_state)
+        self.resizeDocks([self.control_dock, self.waveform_dock], [380, 980], Qt.Horizontal)
+        self.resizeDocks([self.waveform_dock, self.raw_data_dock], [560, 240], Qt.Vertical)
     
     def create_control_panel(self):
         """创建控制面板"""
@@ -777,7 +916,7 @@ class MainWindow(QMainWindow):
         title_label = QLabel("控制面板")
         title_label.setFont(QFont("Arial", 14, QFont.Bold))
         title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
+       # layout.addWidget(title_label)
         
         # 数据源类型选择
         source_group = QGroupBox("数据源")
