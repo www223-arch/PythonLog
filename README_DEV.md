@@ -89,6 +89,8 @@
 - 波形绘制
 - 频域分析
 - 用户重命名输入
+- Dock 拖拽/浮动与工具栏交互
+- 浮动页返回/图钉置顶交互
 
 约束：
 - UI 不存储业务真相，只持有显示状态。
@@ -176,10 +178,29 @@
 - 已实现通道重命名映射链式收敛。
 - 已支持原始数据区降载开关。
 - 已具备实时性能指标显示。
+- 已实现 Dock 三面板布局：拖拽重排、浮动分离、图标化锁定/复原。
+- 已实现浮动页右上角返回/图钉控制。
+- 已实现钉住页状态机：唯一钉住页、跨应用置顶重申、取消钉住恢复普通层级。
+- 已实现钉住页防停靠机制：钉住时禁止停靠，避免“先停靠再弹回”视觉抖动。
+- 已实现时域“跟随最新”图标开关：开启时自动调整一次视图，随后用户可自由缩放。
 - 已完成 main.py 第一阶段分层重构：连接流程拆分为 _connect_flow/_disconnect_flow，数据消费拆分为 _extract_waveform_data/_ensure_waveform_channels/_update_waveform_from_packet（功能保持不变）。
 - 已完成 DataSourceManager 第二阶段分层重构：新增统一帧接口 read_frame()（header/timestamp/channels/meta），read_data() 作为兼容适配层保留旧行为。
 - 已完成第三阶段主路径切换：DataReceiveThread 改为消费 read_frame()，UI 侧兼容统一帧与旧扁平字典。
 - 已新增最小回归测试: tests/test_regression_layering.py，覆盖切源状态清理、Justfloat多次重命名收敛、read_frame/read_data兼容、read_frame路径CSV保存。
+
+## 窗口层级实现备注
+
+1. 钉住页置顶
+- 采用 Qt 与 Win32 双层重申策略：
+- Qt 侧：QWindow 级 `WindowStaysOnTopHint`（避免直接对 QDockWidget 调整 QWidget flags 引发副作用）。
+- Win32 侧：`SetWindowPos(HWND_NOTOPMOST -> HWND_TOPMOST)` + owner/transient 修正。
+
+2. 状态机与清理策略
+- `_pinned_dock` 仅在“主动取消置顶”或“主动返回主布局”时清空。
+- 避免在短暂可见性/浮动态抖动时误清空，防止守护链断开。
+
+3. 调试开关
+- 窗口层级诊断日志通过环境变量启用：`PYTHONLOG_WIN_DEBUG=1`。
 
 ## 提交流程建议
 
