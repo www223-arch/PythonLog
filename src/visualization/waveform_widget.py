@@ -5,7 +5,7 @@
 """
 
 import pyqtgraph as pg
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox, QHBoxLayout
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox, QHBoxLayout, QToolButton, QStyle
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 from typing import Dict, List, Tuple, Optional
@@ -38,6 +38,9 @@ class WaveformWidget(QWidget):
         # 状态
         self.is_paused = False
         self.auto_scale = True
+        self.follow_latest = True
+        self.follow_window_points = 300
+        self._follow_just_enabled = True
         
         # 标记点存储
         self.marked_points = []  # 存储标记的点 [(channel_name, x, y), ...]
@@ -139,9 +142,49 @@ class WaveformWidget(QWidget):
         self.info_label.setStyleSheet("color: #666;")
         self.info_label.setWordWrap(True)  # 允许换行
         self.info_label.setWordWrap(True)  # 允许换行
+
+        # 时域视图跟随控制
+        view_control_layout = QHBoxLayout()
+        view_control_layout.setSpacing(4)
+
+        self.follow_latest_btn = QToolButton()
+        self.follow_latest_btn.setCheckable(True)
+        self.follow_latest_btn.setChecked(True)
+        self.follow_latest_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekForward))
+        self.follow_latest_btn.setIconSize(self.follow_latest_btn.iconSize())
+        self.follow_latest_btn.setToolTip("跟随最新数据（开启时自动调整一次）")
+        self.follow_latest_btn.toggled.connect(self.set_follow_latest)
+
+        compact_style = (
+            "QToolButton {"
+            "border: 1px solid #A9BFEA;"
+            "border-radius: 4px;"
+            "background: #FFFFFF;"
+            "min-width: 22px;"
+            "min-height: 22px;"
+            "max-width: 22px;"
+            "max-height: 22px;"
+            "font-weight: 700;"
+            "color: #1F3F75;"
+            "padding: 0px;"
+            "}"
+            "QToolButton:checked {"
+            "background: #2E6CE6;"
+            "border-color: #2E6CE6;"
+            "color: #FFFFFF;"
+            "}"
+            "QToolButton:hover {"
+            "background: #EAF2FF;"
+            "}"
+        )
+        self.follow_latest_btn.setStyleSheet(compact_style)
+
+        view_control_layout.addWidget(self.follow_latest_btn)
+        view_control_layout.addStretch()
         
         # 添加到时域布局
         time_layout.addWidget(self.info_label)
+        time_layout.addLayout(view_control_layout)
         time_layout.addWidget(self.plot_widget)
         
         self.time_tab.setLayout(time_layout)
@@ -299,9 +342,93 @@ class WaveformWidget(QWidget):
         for name, channel in self.channels.items():
             if channel['x_data'] and channel['data']:
                 channel['curve'].setData(channel['x_data'], channel['data'])
+
+        self._sync_view_with_latest_data()
         
         # 重置数据更新标志
         self.data_updated = False
+
+    def _collect_latest_window(self) -> Tuple[List[float], List[float], Optional[float]]:
+        """收集所有通道的最新窗口数据。"""
+        x_vals = []
+        y_vals = []
+        latest_x = None
+
+        for channel in self.channels.values():
+            xs = channel.get('x_data', [])
+            ys = channel.get('data', [])
+            if not xs or not ys:
+                continue
+
+            n = min(len(xs), len(ys), self.follow_window_points)
+            if n <= 0:
+                continue
+
+            seg_x = xs[-n:]
+            seg_y = ys[-n:]
+            x_vals.extend(seg_x)
+            y_vals.extend(seg_y)
+
+            channel_latest = seg_x[-1]
+            if latest_x is None or channel_latest > latest_x:
+                latest_x = channel_latest
+
+        return x_vals, y_vals, latest_x
+
+    def _sync_view_with_latest_data(self) -> None:
+        """根据配置让视图跟随最新数据，并可对最新窗口自适应缩放。"""
+        if not self.channels:
+            return
+
+        if not self.follow_latest:
+            return
+
+        x_vals, y_vals, latest_x = self._collect_latest_window()
+        if latest_x is None or not x_vals or not y_vals:
+            return
+
+        if self._follow_just_enabled:
+            x_min = min(x_vals)
+            x_max = max(x_vals)
+            if x_max <= x_min:
+                x_max = x_min + 1.0
+
+            y_min = min(y_vals)
+            y_max = max(y_vals)
+            if y_max <= y_min:
+                delta = max(1e-3, abs(y_min) * 0.1)
+                y_min -= delta
+                y_max += delta
+            else:
+                margin = (y_max - y_min) * 0.08
+                y_min -= margin
+                y_max += margin
+
+            self.plot_widget.setXRange(x_min, x_max, padding=0)
+            self.plot_widget.setYRange(y_min, y_max, padding=0)
+            self._follow_just_enabled = False
+            return
+
+        current_range = self.plot_widget.plotItem.vb.viewRange()[0]
+        span = current_range[1] - current_range[0]
+        if span <= 0:
+            span = max(x_vals) - min(x_vals)
+        if span <= 0:
+            span = 1.0
+
+        x_max = latest_x
+        x_min = x_max - span
+        self.plot_widget.setXRange(x_min, x_max, padding=0)
+
+    def set_follow_latest(self, enabled: bool) -> None:
+        """设置是否让视图跟随最新数据。"""
+        self.follow_latest = bool(enabled)
+        if self.follow_latest:
+            self._follow_just_enabled = True
+
+    def set_follow_window_points(self, points: int) -> None:
+        """设置用于跟随/最佳缩放的窗口点数。"""
+        self.follow_window_points = max(50, int(points))
     
     def start_update(self) -> None:
         """启动定时更新"""
