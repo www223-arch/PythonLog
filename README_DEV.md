@@ -6,6 +6,7 @@
 
 - 详细开发指南（推荐先读）：[docs/developer_guide.md](docs/developer_guide.md)
 - 学习路径（面向新人）：[docs/learning_guide.md](docs/learning_guide.md)
+- 热力图/机器学习模块开发指南：[docs/heatmap_ml_module_guide.md](docs/heatmap_ml_module_guide.md)
 
 说明：
 - 本文档强调架构约束与回归风险。

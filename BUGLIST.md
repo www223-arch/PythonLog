@@ -279,6 +279,51 @@
 ### 影响范围
 - 仅涉及 UI 布局与交互层，不改变数据源解析、线程队列与协议行为。
 
+## 2026-03-17 点阵压力UDP发送后上位机收不到数据
+
+### 现象
+- 使用 `python tools/pressure_matrix_sender.py --mode udp --grid-width 16 --grid-height 16 --rate 30 --duration 30` 发送时，上位机无曲线、压力平面无更新。
+
+### 复现条件
+1. 上位机数据源选择 UDP，监听端口 8888。
+2. 启动点阵发送器，发送 16x16 文本点阵帧（`p_row_col=value`）。
+3. 上位机持续显示“无数据/等待数据”。
+
+### 分析过程
+1. 检查协议格式
+- 发送端帧格式正确：`DATA,timestamp,p_0_0=...,p_0_1=...,...`。
+- 数据头与上位机默认校验头一致（`DATA`）。
+
+2. 检查接收实现
+- `src/data_sources/udp_source.py` 默认 `buffer_size = 1024`。
+- 16x16 点阵文本帧通常远超 1KB，`recvfrom(1024)` 会截断 UDP 数据报。
+
+3. 截断后果
+- 被截断的文本尾部不完整，解析时出现字段缺失/浮点转换异常。
+- 解析返回空元组，Manager 将其视作格式错误或无效帧，最终 UI 无有效更新。
+
+### 根因结论
+- 根因：UDP 接收缓存默认值过小（1KB），无法承载点阵压力文本大包，导致报文截断与解析失败。
+
+### 修复方案
+1. 调整默认接收缓冲
+- `UDPDataSource.buffer_size` 从 `1024` 提升到 `65535`（UDP 单报文上限）。
+
+2. 提升系统 socket 接收缓冲
+- 在 `connect()` 中设置 `SO_RCVBUF` 为更高值（`max(262144, buffer_size*4)`），降低高频场景丢包风险。
+
+3. 回归测试补齐
+- 新增测试：`tests/test_regression_layering.py::test_udp_default_buffer_is_large_enough_for_matrix_frames`，防止默认值回退。
+
+### 验证结果
+- 自动化回归通过（含新增测试）。
+- 在 16x16 点阵发送场景下，报文不再因 1KB 缓冲被截断。
+
+### 影响范围
+- 影响模块：`src/data_sources/udp_source.py`。
+- 风险评估：低。仅扩容接收缓冲，不改变协议语义与上层接口。
+- 受益链路：UDP 文本大包场景（尤其点阵压力、通道数较多场景）。
+
 ## 2026-03-16 Dock拖拽后页面“被吞”仅能复原找回
 
 ### 现象

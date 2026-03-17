@@ -27,7 +27,8 @@ class UDPDataSource(DataSource):
         self.host = host
         self.port = port
         self.socket = None
-        self.buffer_size = 1024
+        # 点阵文本帧（如16x16/32x32）会远超1KB，默认提升到UDP单报文安全上限。
+        self.buffer_size = 65535
         self.data_format = 'f'  # 默认浮点数格式
         self.last_raw_text = None  # 存储原始文本，用于提取通道名称
         self.raw_data_callback = None  # 原始数据回调函数
@@ -45,6 +46,8 @@ class UDPDataSource(DataSource):
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             # 允许UDP广播发送（如255.255.255.255）
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            # 提高系统接收缓冲，降低高频大包场景下丢包概率。
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, max(262144, self.buffer_size * 4))
             self.socket.bind((self.host, self.port))
             self.socket.settimeout(0.001)  # 设置超时时间为1ms（非阻塞）
             self.is_connected = True

@@ -21,6 +21,7 @@ from PyQt5.QtGui import QFont, QColor, QKeySequence
 from data_sources.manager import (
     DataSourceManager,
 )
+from analytics import ArterialHealthPipeline
 from visualization.waveform_widget import WaveformWidget
 from core.connection_fsm import ConnectedReceivingState, StateMachine, StateViewModel
 from core.channel_menu_mixin import ChannelMenuMixin
@@ -386,6 +387,33 @@ QDockWidget::float-button {
         
         channel_group.setLayout(channel_layout)
         layout.addWidget(channel_group)
+
+        # 动脉压力分析配置
+        analysis_group = QGroupBox("动脉压力分析")
+        analysis_layout = QFormLayout()
+
+        self.analysis_enable_checkbox = QCheckBox("启用分析")
+        self.analysis_enable_checkbox.setChecked(False)
+        self.analysis_enable_checkbox.toggled.connect(self.on_analysis_enabled_changed)
+
+        self.grid_width_edit = QLineEdit("16")
+        self.grid_height_edit = QLineEdit("16")
+        self.analysis_stride_edit = QLineEdit("1")
+        self.model_path_edit = QLineEdit("")
+        self.model_path_edit.setPlaceholderText("可选: joblib模型路径")
+
+        apply_analysis_btn = QPushButton("应用分析配置")
+        apply_analysis_btn.clicked.connect(self.apply_analysis_config)
+
+        analysis_layout.addRow("分析开关:", self.analysis_enable_checkbox)
+        analysis_layout.addRow("点阵宽度:", self.grid_width_edit)
+        analysis_layout.addRow("点阵高度:", self.grid_height_edit)
+        analysis_layout.addRow("分析步长:", self.analysis_stride_edit)
+        analysis_layout.addRow("模型路径:", self.model_path_edit)
+        analysis_layout.addRow(apply_analysis_btn)
+
+        analysis_group.setLayout(analysis_layout)
+        layout.addWidget(analysis_group)
         
         # 状态显示
         status_group = QGroupBox("状态")
@@ -398,11 +426,17 @@ QDockWidget::float-button {
         self.perf_label.setStyleSheet("color: #666;")
         self.save_file_label = QLabel("保存文件: 无")
         self.save_file_label.setStyleSheet("color: #666;")
+        self.arterial_metrics_label = QLabel("动脉指标: 未启用")
+        self.arterial_metrics_label.setStyleSheet("color: #666;")
+        self.arterial_pred_label = QLabel("健康评估: 未启用")
+        self.arterial_pred_label.setStyleSheet("color: #666;")
         
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.data_count_label)
         status_layout.addWidget(self.perf_label)
         status_layout.addWidget(self.save_file_label)
+        status_layout.addWidget(self.arterial_metrics_label)
+        status_layout.addWidget(self.arterial_pred_label)
         
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
@@ -441,6 +475,9 @@ QDockWidget::float-button {
     def init_components(self):
         """初始化组件"""
         self.data_source_manager = DataSourceManager()
+        # 分析模块默认关闭，避免影响现有主链路。
+        self.arterial_pipeline = self._build_arterial_pipeline_from_ui(enabled=False)
+        self.latest_arterial_result = None
         self.data_count = 0
         self.auto_save_enabled = False
         self.last_data_time = None  # 记录最后接收数据的时间
@@ -695,6 +732,108 @@ QDockWidget::float-button {
         timestamp = data_dict.get('timestamp', 0.0)
         self.waveform_widget.update_channels(waveform_data, timestamp)
 
+    def _submit_arterial_analysis(self, data_dict):
+        """提交数据包到动脉分析管线。"""
+        if not hasattr(self, 'arterial_pipeline') or self.arterial_pipeline is None:
+            return
+
+        result = self.arterial_pipeline.submit_frame(data_dict)
+        if result is not None:
+            self.latest_arterial_result = result
+            self._apply_arterial_result(result)
+
+    def _apply_arterial_result(self, result):
+        """将分析结果更新到UI。"""
+        if not isinstance(result, dict):
+            return
+
+        heatmap = result.get('heatmap', {}) or {}
+        matrix = heatmap.get('matrix')
+        metrics = result.get('metrics', {}) or {}
+        prediction = result.get('prediction', {}) or {}
+
+        self.waveform_widget.update_pressure_matrix(
+            matrix,
+            result.get('timestamp', 0.0),
+            metrics,
+            prediction,
+        )
+
+        if metrics:
+            bpm = float(metrics.get('bpm', 0.0))
+            amp = float(metrics.get('amplitude', 0.0))
+            consistency = float(metrics.get('consistency', 0.0))
+            repeatability = float(metrics.get('repeatability', 0.0))
+            self.arterial_metrics_label.setText(
+                f"动脉指标: bpm {bpm:.1f} | amp {amp:.3f} | 一致性 {consistency:.2f} | 重复性 {repeatability:.2f}"
+            )
+
+        if prediction:
+            label = str(prediction.get('label', 'unknown'))
+            score = float(prediction.get('score', 0.0))
+            risk = str(prediction.get('risk_level', 'unknown'))
+            mode = str(prediction.get('mode', 'rule'))
+            self.arterial_pred_label.setText(
+                f"健康评估: {label} | score {score:.2f} | 风险 {risk} | 模式 {mode}"
+            )
+
+    def _reset_arterial_ui_state(self):
+        """重置动脉分析显示状态。"""
+        self.latest_arterial_result = None
+        if hasattr(self, 'waveform_widget') and self.waveform_widget is not None:
+            self.waveform_widget.clear_pressure_view()
+        if hasattr(self, 'arterial_metrics_label'):
+            if self.analysis_enable_checkbox.isChecked():
+                self.arterial_metrics_label.setText("动脉指标: 等待数据")
+            else:
+                self.arterial_metrics_label.setText("动脉指标: 未启用")
+        if hasattr(self, 'arterial_pred_label'):
+            if self.analysis_enable_checkbox.isChecked():
+                self.arterial_pred_label.setText("健康评估: 等待数据")
+            else:
+                self.arterial_pred_label.setText("健康评估: 未启用")
+
+    def _build_arterial_pipeline_from_ui(self, enabled=None):
+        """根据UI配置创建动脉分析管线。"""
+        try:
+            grid_width = max(1, int(self.grid_width_edit.text().strip() or "16"))
+            grid_height = max(1, int(self.grid_height_edit.text().strip() or "16"))
+            analysis_stride = max(1, int(self.analysis_stride_edit.text().strip() or "1"))
+        except ValueError:
+            grid_width = 16
+            grid_height = 16
+            analysis_stride = 1
+
+        if enabled is None:
+            enabled = self.analysis_enable_checkbox.isChecked() if hasattr(self, 'analysis_enable_checkbox') else False
+
+        model_path = self.model_path_edit.text().strip() if hasattr(self, 'model_path_edit') else ""
+
+        return ArterialHealthPipeline(
+            enabled=bool(enabled),
+            grid_width=grid_width,
+            grid_height=grid_height,
+            analysis_stride=analysis_stride,
+            model_path=model_path,
+        )
+
+    def apply_analysis_config(self):
+        """应用动脉分析配置。"""
+        self.arterial_pipeline = self._build_arterial_pipeline_from_ui()
+        self._reset_arterial_ui_state()
+        grid_info = f"{self.arterial_pipeline.adapter.grid_width}x{self.arterial_pipeline.adapter.grid_height}"
+        if self.arterial_pipeline.enabled:
+            QMessageBox.information(self, "动脉分析", f"分析已启用，点阵: {grid_info}")
+        else:
+            QMessageBox.information(self, "动脉分析", f"分析已禁用，点阵: {grid_info}")
+
+    def on_analysis_enabled_changed(self, checked: bool):
+        """分析开关切换。"""
+        if self.arterial_pipeline is None:
+            return
+        self.arterial_pipeline.enabled = bool(checked)
+        self._reset_arterial_ui_state()
+
     def _sync_receiving_indicator(self):
         """兜底同步：接收状态必须保持蓝色闪烁。"""
         if not isinstance(self.state_machine.current_state, ConnectedReceivingState):
@@ -920,6 +1059,7 @@ QDockWidget::float-button {
                 self.last_data_time = QDateTime.currentMSecsSinceEpoch()
 
                 self._update_waveform_from_packet(data_dict)
+                self._submit_arterial_analysis(data_dict)
                 
                 processed_count += 1
             except queue.Empty:
