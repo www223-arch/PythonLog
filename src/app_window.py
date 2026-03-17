@@ -22,6 +22,7 @@ from data_sources.manager import (
     DataSourceManager,
 )
 from analytics import ArterialHealthPipeline
+from analytics.ml.model_runner import ModelRunner
 from visualization.waveform_widget import WaveformWidget
 from core.connection_fsm import ConnectedReceivingState, StateMachine, StateViewModel
 from core.channel_menu_mixin import ChannelMenuMixin
@@ -401,6 +402,12 @@ QDockWidget::float-button {
         self.analysis_stride_edit = QLineEdit("1")
         self.model_path_edit = QLineEdit("")
         self.model_path_edit.setPlaceholderText("可选: joblib模型路径")
+        self.model_browse_btn = QPushButton("浏览...")
+        self.model_browse_btn.clicked.connect(self.browse_model_path)
+
+        model_path_layout = QHBoxLayout()
+        model_path_layout.addWidget(self.model_path_edit)
+        model_path_layout.addWidget(self.model_browse_btn)
 
         apply_analysis_btn = QPushButton("应用分析配置")
         apply_analysis_btn.clicked.connect(self.apply_analysis_config)
@@ -409,7 +416,7 @@ QDockWidget::float-button {
         analysis_layout.addRow("点阵宽度:", self.grid_width_edit)
         analysis_layout.addRow("点阵高度:", self.grid_height_edit)
         analysis_layout.addRow("分析步长:", self.analysis_stride_edit)
-        analysis_layout.addRow("模型路径:", self.model_path_edit)
+        analysis_layout.addRow("模型路径:", model_path_layout)
         analysis_layout.addRow(apply_analysis_btn)
 
         analysis_group.setLayout(analysis_layout)
@@ -822,8 +829,21 @@ QDockWidget::float-button {
         self.arterial_pipeline = self._build_arterial_pipeline_from_ui()
         self._reset_arterial_ui_state()
         grid_info = f"{self.arterial_pipeline.adapter.grid_width}x{self.arterial_pipeline.adapter.grid_height}"
+        model_status = self.arterial_pipeline.get_model_status()
+        model_mode = str(model_status.get('mode', 'rule'))
+        model_error = str(model_status.get('load_error', '') or '')
+
         if self.arterial_pipeline.enabled:
-            QMessageBox.information(self, "动脉分析", f"分析已启用，点阵: {grid_info}")
+            if model_mode == 'external':
+                QMessageBox.information(self, "动脉分析", f"分析已启用，点阵: {grid_info}\n模型状态: external（已加载）")
+            elif self.model_path_edit.text().strip():
+                QMessageBox.warning(
+                    self,
+                    "动脉分析",
+                    f"分析已启用，点阵: {grid_info}\n模型状态: rule（已降级）\n原因: {model_error or '未知错误'}",
+                )
+            else:
+                QMessageBox.information(self, "动脉分析", f"分析已启用，点阵: {grid_info}\n模型状态: rule（未配置模型）")
         else:
             QMessageBox.information(self, "动脉分析", f"分析已禁用，点阵: {grid_info}")
 
@@ -897,6 +917,38 @@ QDockWidget::float-button {
         dir_path = QFileDialog.getExistingDirectory(self, "选择保存目录", self.save_path_edit.text())
         if dir_path:
             self.save_path_edit.setText(dir_path)
+
+    def browse_model_path(self):
+        """浏览模型文件路径（.joblib）。"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择模型文件",
+            self.model_path_edit.text() or os.getcwd(),
+            "模型文件 (*.joblib);;所有文件 (*)",
+        )
+        if file_path:
+            self.model_path_edit.setText(file_path)
+            self._validate_selected_model_path(show_success=True)
+
+    def _validate_selected_model_path(self, show_success: bool = False) -> bool:
+        """校验模型文件可读性。"""
+        model_path = self.model_path_edit.text().strip()
+        if not model_path:
+            return False
+
+        checker = ModelRunner(model_path=model_path)
+        status = checker.get_status()
+        if str(status.get('mode')) == 'external' and bool(status.get('has_model')):
+            if show_success:
+                QMessageBox.information(self, "模型校验", "模型文件校验通过，可用于外部推理。")
+            return True
+
+        QMessageBox.warning(
+            self,
+            "模型校验",
+            f"模型文件不可用，将在运行时降级为规则模式。\n原因: {status.get('load_error') or '未知错误'}",
+        )
+        return False
     
     def toggle_saving(self):
         """切换数据保存状态"""

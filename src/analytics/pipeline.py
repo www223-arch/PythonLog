@@ -1,7 +1,7 @@
 """动脉健康分析管线。"""
 
 from collections import deque
-from typing import Deque, Dict, Optional, Tuple
+from typing import Deque, Dict, Optional
 
 import numpy as np
 
@@ -104,6 +104,9 @@ class ArterialHealthPipeline:
 
     def get_latest_result(self) -> Optional[AnalysisResult]:
         return self.latest_result
+
+    def get_model_status(self) -> Dict[str, object]:
+        return self.runner.get_status()
 
     def _compute_metrics(self) -> Dict[str, float]:
         if not self.matrix_history:

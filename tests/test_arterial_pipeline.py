@@ -9,6 +9,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 from analytics.heatmap.pressure_grid_adapter import PressureGridAdapter
+from analytics.ml.model_runner import ModelRunner
 from analytics.pipeline import ArterialHealthPipeline
 
 
@@ -70,6 +71,13 @@ class ArterialPipelineTests(unittest.TestCase):
         }
         result = pipeline.submit_frame(frame)
         self.assertIsNone(result)
+
+    def test_model_runner_status_reports_invalid_path(self):
+        runner = ModelRunner(model_path='not_exists_model.joblib')
+        status = runner.get_status()
+        self.assertEqual(status.get('mode'), 'rule')
+        self.assertFalse(bool(status.get('has_model')))
+        self.assertTrue('不存在' in str(status.get('load_error', '')))
 
 
 if __name__ == '__main__':

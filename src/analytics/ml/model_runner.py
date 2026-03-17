@@ -15,10 +15,16 @@ class ModelRunner:
         self.feature_order = list(feature_order or [])
         self.model = None
         self.model_mode = "rule"
+        self.load_error = ""
         self._try_load_model()
 
     def _try_load_model(self) -> None:
-        if not self.model_path or not os.path.isfile(self.model_path):
+        if not self.model_path:
+            self.load_error = ""
+            return
+
+        if not os.path.isfile(self.model_path):
+            self.load_error = "模型文件不存在"
             return
 
         try:
@@ -26,9 +32,19 @@ class ModelRunner:
 
             self.model = joblib.load(self.model_path)
             self.model_mode = "external"
-        except Exception:
+            self.load_error = ""
+        except Exception as e:
             self.model = None
             self.model_mode = "rule"
+            self.load_error = f"模型加载失败: {e}"
+
+    def get_status(self) -> Dict[str, object]:
+        return {
+            "mode": self.model_mode,
+            "model_path": self.model_path,
+            "has_model": self.model is not None,
+            "load_error": self.load_error,
+        }
 
     def predict(self, features: Dict[str, float], metrics: Optional[Dict[str, float]] = None) -> Dict[str, object]:
         if not features:
