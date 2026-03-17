@@ -11,6 +11,24 @@
 - 本文档强调架构约束与回归风险。
 - `docs/developer_guide.md` 提供更完整的“新增功能/调试/规范/清单”执行手册。
 
+## 近期架构演进（2026-03）
+
+- `src/main.py` 已收敛为薄入口，仅负责启动应用。
+- 主窗口编排主实现迁移到 `src/app_window.py`。
+- `src/core/` 已形成职责模块化：
+    - `dock_topmost_mixin.py`：浮动页置顶与层级管理。
+    - `dock_layout_mixin.py`：Dock 布局、工具栏、事件联动。
+    - `connection_flow_mixin.py`：连接/断开编排与配置路由。
+    - `raw_data_mixin.py`：原始数据区、发送区与缓冲刷新。
+    - `channel_menu_mixin.py`：通道菜单、改色与重命名。
+    - `receive_thread.py`、`widgets.py`：接收线程与通用组件。
+- 状态机已与 UI 控件解耦：
+    - `connection_fsm.py` 输出 `StateViewModel`。
+    - `app_window.py` 通过 `apply_fsm_view` 统一渲染状态。
+- 数据源实例化已从连接编排中下沉：
+    - 新增 `core/data_source_factory.py`。
+    - `connection_flow_mixin.py` 保留 UI 配置校验与流程控制。
+
 
 ## 当前分层模型（必须遵守）
 
@@ -130,7 +148,8 @@
 ### 代码组织
 - 传输与协议逻辑放在 src/data_sources/。
 - UI 绘图逻辑放在 src/visualization/。
-- 主流程编排放在 src/main.py。
+- 主流程编排放在 src/app_window.py 与 src/core/。
+- src/main.py 仅保留入口，不承载业务逻辑。
 
 ### 命名与注释
 - 使用清晰英文符号名，中文用于界面文案。
@@ -173,9 +192,11 @@
 - 已实现钉住页状态机：唯一钉住页、跨应用置顶重申、取消钉住恢复普通层级。
 - 已实现钉住页防停靠机制：钉住时禁止停靠，避免“先停靠再弹回”视觉抖动。
 - 已实现时域“跟随最新”图标开关：开启时自动调整一次视图，随后用户可自由缩放。
-- 已完成 main.py 第一阶段分层重构：连接流程拆分为 _connect_flow/_disconnect_flow，数据消费拆分为 _extract_waveform_data/_ensure_waveform_channels/_update_waveform_from_packet（功能保持不变）。
+- 已完成主窗口拆分：连接流程、原始数据、通道菜单、Dock 行为均已迁入 core mixin。
 - 已完成 DataSourceManager 第二阶段分层重构：新增统一帧接口 read_frame()（header/timestamp/channels/meta），read_data() 作为兼容适配层保留旧行为。
 - 已完成第三阶段主路径切换：DataReceiveThread 改为消费 read_frame()，UI 侧兼容统一帧与旧扁平字典。
+- 已完成 FSM->UI 解耦：状态层不直接访问控件，改由视图模型下发。
+- 已完成数据源构建下沉：connection_flow 仅编排，factory 负责实例化细节。
 - 已新增最小回归测试: tests/test_regression_layering.py，覆盖切源状态清理、Justfloat多次重命名收敛、read_frame/read_data兼容、read_frame路径CSV保存。
 
 ## 窗口层级实现备注
