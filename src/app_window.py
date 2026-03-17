@@ -9,14 +9,19 @@ Python上位机主程序
 
 import sys
 import os
+import json
+import csv
+import subprocess
 import queue
 import threading
 import time
+import shlex
+from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QShortcut, QComboBox, QDockWidget)
-from PyQt5.QtCore import Qt, QTimer, QDateTime
-from PyQt5.QtGui import QFont, QColor, QKeySequence
+                             QGroupBox, QFormLayout, QMessageBox, QFileDialog, QCheckBox, QShortcut, QComboBox, QDockWidget, QToolButton)
+from PyQt5.QtCore import Qt, QTimer, QDateTime, pyqtSignal
+from PyQt5.QtGui import QFont, QColor, QKeySequence, QImage, QPainter, QPen
 
 from data_sources.manager import (
     DataSourceManager,
@@ -36,13 +41,30 @@ from core.widgets import CircularButton
 
 class MainWindow(ChannelMenuMixin, RawDataMixin, ConnectionFlowMixin, DockLayoutMixin, QMainWindow, DockTopmostMixin):
     """主窗口"""
+
+    train_finished_signal = pyqtSignal(object)
+    METRIC_EXPORT_ITEMS = [
+        ("训练指标: accuracy", "train_accuracy", True),
+        ("训练指标: macro-f1", "train_macro_f1", True),
+        ("训练指标: 混淆矩阵摘要", "train_confusion_summary", False),
+        ("健康指标: bpm", "health_bpm", True),
+        ("健康指标: amplitude", "health_amplitude", True),
+        ("健康指标: consistency", "health_consistency", True),
+        ("健康指标: repeatability", "health_repeatability", True),
+        ("健康评估: label", "eval_label", True),
+        ("健康评估: score", "eval_score", True),
+        ("健康评估: risk_level", "eval_risk_level", True),
+        ("健康评估: mode", "eval_mode", False),
+    ]
     
     def __init__(self):
         super().__init__()
         # 提前初始化日志开关，确保init_ui阶段可安全调用log_print
         self.log_enabled = False  # 默认关闭日志
-        self.fsm_debug_enabled = True  # FSM/UI调试日志默认开启，便于定位状态切换问题
+        self.fsm_debug_enabled = (os.environ.get("PYTHONLOG_FSM_DEBUG", "0") == "1")
+        self.export_debug_enabled = True
         self.window_debug_enabled = (os.environ.get("PYTHONLOG_WIN_DEBUG", "0") == "1")  # 窗口层级调试默认关闭
+        self.train_finished_signal.connect(self._handle_train_finished_signal)
         self.init_ui()
         self.init_components()
         self.init_connections()
@@ -54,6 +76,10 @@ class MainWindow(ChannelMenuMixin, RawDataMixin, ConnectionFlowMixin, DockLayout
 
     def fsm_debug_print(self, *args, **kwargs) -> None:
         """FSM/UI调试日志输出接口（不受普通日志开关影响）。"""
+        first = str(args[0]) if args else ""
+        if first.startswith("[EXPORT]") and self.export_debug_enabled:
+            print(*args, **kwargs)
+            return
         if self.fsm_debug_enabled:
             print(*args, **kwargs)
 
@@ -102,6 +128,7 @@ class MainWindow(ChannelMenuMixin, RawDataMixin, ConnectionFlowMixin, DockLayout
 
         # 主面板
         control_panel = self.create_control_panel()
+        self.create_ml_subwindow()
         self.waveform_widget = WaveformWidget()
         raw_data_panel = self.create_raw_data_panel()
 
@@ -389,38 +416,18 @@ QDockWidget::float-button {
         channel_group.setLayout(channel_layout)
         layout.addWidget(channel_group)
 
-        # 动脉压力分析配置
-        analysis_group = QGroupBox("动脉压力分析")
-        analysis_layout = QFormLayout()
-
-        self.analysis_enable_checkbox = QCheckBox("启用分析")
-        self.analysis_enable_checkbox.setChecked(False)
-        self.analysis_enable_checkbox.toggled.connect(self.on_analysis_enabled_changed)
-
-        self.grid_width_edit = QLineEdit("16")
-        self.grid_height_edit = QLineEdit("16")
-        self.analysis_stride_edit = QLineEdit("1")
-        self.model_path_edit = QLineEdit("")
-        self.model_path_edit.setPlaceholderText("可选: joblib模型路径")
-        self.model_browse_btn = QPushButton("浏览...")
-        self.model_browse_btn.clicked.connect(self.browse_model_path)
-
-        model_path_layout = QHBoxLayout()
-        model_path_layout.addWidget(self.model_path_edit)
-        model_path_layout.addWidget(self.model_browse_btn)
-
-        apply_analysis_btn = QPushButton("应用分析配置")
-        apply_analysis_btn.clicked.connect(self.apply_analysis_config)
-
-        analysis_layout.addRow("分析开关:", self.analysis_enable_checkbox)
-        analysis_layout.addRow("点阵宽度:", self.grid_width_edit)
-        analysis_layout.addRow("点阵高度:", self.grid_height_edit)
-        analysis_layout.addRow("分析步长:", self.analysis_stride_edit)
-        analysis_layout.addRow("模型路径:", model_path_layout)
-        analysis_layout.addRow(apply_analysis_btn)
-
-        analysis_group.setLayout(analysis_layout)
-        layout.addWidget(analysis_group)
+        # 机器学习入口：配置迁移到独立子窗口，避免和数据配置混杂。
+        ml_entry_group = QGroupBox("机器学习")
+        ml_entry_layout = QVBoxLayout()
+        self.open_ml_center_btn = QPushButton("打开机器学习中心")
+        self.open_ml_center_btn.clicked.connect(self.open_ml_center_window)
+        ml_entry_hint = QLabel("推理与离线训练配置已独立到子窗口")
+        ml_entry_hint.setStyleSheet("color: #666;")
+        ml_entry_hint.setWordWrap(True)
+        ml_entry_layout.addWidget(self.open_ml_center_btn)
+        ml_entry_layout.addWidget(ml_entry_hint)
+        ml_entry_group.setLayout(ml_entry_layout)
+        layout.addWidget(ml_entry_group)
         
         # 状态显示
         status_group = QGroupBox("状态")
@@ -478,6 +485,189 @@ QDockWidget::float-button {
     
         panel.setLayout(layout)
         return panel
+
+    def create_ml_subwindow(self):
+        """创建机器学习配置子窗口。"""
+        self.ml_window = QWidget(self)
+        self.ml_window.setWindowTitle("机器学习中心")
+        self.ml_window.setWindowFlag(Qt.Window, True)
+        self.ml_window.resize(560, 680)
+
+        ml_layout = QVBoxLayout()
+
+        inference_group = QGroupBox("在线推理配置")
+        inference_layout = QFormLayout()
+
+        self.analysis_enable_checkbox = QCheckBox("启用分析")
+        self.analysis_enable_checkbox.setChecked(False)
+        self.analysis_enable_checkbox.toggled.connect(self.on_analysis_enabled_changed)
+
+        self.grid_width_edit = QLineEdit("16")
+        self.grid_height_edit = QLineEdit("16")
+        self.analysis_stride_edit = QLineEdit("1")
+
+        self.inference_model_combo = QComboBox()
+        self.inference_model_combo.addItems([
+            "自动加载(按模型文件)",
+            "规则引擎",
+            "随机森林",
+            "逻辑回归",
+            "支持向量机(SVM)",
+            "梯度提升树",
+        ])
+        self.inference_model_combo.setCurrentText("自动加载(按模型文件)")
+        self.inference_model_combo.currentTextChanged.connect(self.on_inference_model_changed)
+
+        self.model_path_edit = QLineEdit("")
+        self.model_path_edit.setPlaceholderText("可选: joblib模型路径")
+        self.model_browse_btn = QPushButton("浏览...")
+        self.model_browse_btn.clicked.connect(self.browse_model_path)
+
+        model_path_layout = QHBoxLayout()
+        model_path_layout.addWidget(self.model_path_edit)
+        model_path_layout.addWidget(self.model_browse_btn)
+
+        apply_analysis_btn = QPushButton("应用推理配置")
+        apply_analysis_btn.clicked.connect(self.apply_analysis_config)
+
+        inference_layout.addRow("分析开关:", self.analysis_enable_checkbox)
+        inference_layout.addRow("模型选择:", self.inference_model_combo)
+        inference_layout.addRow("点阵宽度:", self.grid_width_edit)
+        inference_layout.addRow("点阵高度:", self.grid_height_edit)
+        inference_layout.addRow("分析步长:", self.analysis_stride_edit)
+        inference_layout.addRow("模型路径:", model_path_layout)
+        inference_layout.addRow(apply_analysis_btn)
+        inference_group.setLayout(inference_layout)
+
+        training_group = QGroupBox("离线训练配置")
+        training_layout = QFormLayout()
+
+        self.train_dataset_edit = QLineEdit("data/arterial_train_dataset.csv")
+        self.train_dataset_edit.setPlaceholderText("训练数据CSV路径")
+        self.train_dataset_browse_btn = QPushButton("浏览...")
+        self.train_dataset_browse_btn.clicked.connect(self.browse_train_dataset)
+
+        train_dataset_layout = QHBoxLayout()
+        train_dataset_layout.addWidget(self.train_dataset_edit)
+        train_dataset_layout.addWidget(self.train_dataset_browse_btn)
+
+        self.train_model_type_combo = QComboBox()
+        self.train_model_type_combo.addItems([
+            "随机森林",
+            "逻辑回归",
+            "支持向量机(SVM)",
+            "梯度提升树",
+        ])
+        self.train_model_type_combo.setCurrentText("随机森林")
+
+        self.train_test_size_edit = QLineEdit("0.2")
+        self.train_test_size_edit.setPlaceholderText("0.1~0.4")
+        self.train_seed_edit = QLineEdit("42")
+        self.train_seed_edit.setPlaceholderText("随机种子")
+
+        train_basic_param_layout = QHBoxLayout()
+        train_basic_param_layout.addWidget(QLabel("test_size:"))
+        train_basic_param_layout.addWidget(self.train_test_size_edit)
+        train_basic_param_layout.addWidget(QLabel("seed:"))
+        train_basic_param_layout.addWidget(self.train_seed_edit)
+
+        self.train_extra_args_edit = QLineEdit("")
+        self.train_extra_args_edit.setPlaceholderText("可选高级参数: --rf-n-estimators 320 --rf-max-depth 12")
+
+        self.train_output_edit = QLineEdit("data/models/arterial_model.joblib")
+        self.train_output_edit.setPlaceholderText("训练输出模型路径")
+        self.train_output_browse_btn = QPushButton("浏览...")
+        self.train_output_browse_btn.clicked.connect(self.browse_train_output)
+
+        train_output_layout = QHBoxLayout()
+        train_output_layout.addWidget(self.train_output_edit)
+        train_output_layout.addWidget(self.train_output_browse_btn)
+
+        self.train_model_btn = QPushButton("开始训练并加载")
+        self.train_model_btn.clicked.connect(self.train_model_from_ui)
+        self.train_model_busy = False
+
+        self.train_metrics_summary_label = QLabel("测试指标: 暂无")
+        self.train_metrics_summary_label.setWordWrap(True)
+        self.train_metrics_summary_label.setStyleSheet("color: #666;")
+
+        self.train_conf_matrix_label = QLabel("混淆矩阵摘要: 暂无")
+        self.train_conf_matrix_label.setWordWrap(True)
+        self.train_conf_matrix_label.setStyleSheet("color: #666;")
+
+        training_layout.addRow("训练数据:", train_dataset_layout)
+        training_layout.addRow("训练算法:", self.train_model_type_combo)
+        training_layout.addRow("训练参数:", train_basic_param_layout)
+        training_layout.addRow("高级参数:", self.train_extra_args_edit)
+        training_layout.addRow("模型输出:", train_output_layout)
+        training_layout.addRow(self.train_model_btn)
+        training_layout.addRow("测试指标:", self.train_metrics_summary_label)
+        training_layout.addRow("混淆矩阵:", self.train_conf_matrix_label)
+        training_group.setLayout(training_layout)
+
+        export_group = QGroupBox("指标导出配置")
+        export_layout = QVBoxLayout()
+
+        self.metric_export_enable_checkbox = QCheckBox("启用指标导出（随数据保存同步）")
+        self.metric_export_enable_checkbox.setChecked(False)
+        self.metric_export_enable_checkbox.toggled.connect(self.on_metric_export_enabled_changed)
+
+        self.metric_export_checkboxes = {}
+
+        self.metric_export_select_btn = QToolButton()
+        self.metric_export_select_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.metric_export_select_btn.clicked.connect(self.show_metric_export_popup)
+        self._create_metric_export_popup()
+        self._update_metric_export_selector_text()
+
+        self.metric_export_path_edit = QLineEdit("")
+        self.metric_export_path_edit.setPlaceholderText("可选: 指标导出CSV路径，留空自动生成")
+        self.metric_export_path_edit.textChanged.connect(self.on_metric_export_path_changed)
+        self.metric_export_browse_btn = QPushButton("浏览...")
+        self.metric_export_browse_btn.clicked.connect(self.browse_metric_export_output)
+
+        metric_export_path_layout = QHBoxLayout()
+        metric_export_path_layout.addWidget(self.metric_export_path_edit)
+        metric_export_path_layout.addWidget(self.metric_export_browse_btn)
+
+        self.metric_export_chart_checkbox = QCheckBox("保存时同步导出趋势图(PNG)")
+        self.metric_export_chart_checkbox.setChecked(False)
+        self.metric_export_chart_checkbox.toggled.connect(self.on_metric_export_chart_toggled)
+        self.metric_export_chart_path_edit = QLineEdit("")
+        self.metric_export_chart_path_edit.setPlaceholderText("可选: 图表PNG路径，留空自动生成")
+        self.metric_export_chart_path_edit.textChanged.connect(self.on_metric_chart_path_changed)
+        self.metric_export_chart_browse_btn = QPushButton("浏览...")
+        self.metric_export_chart_browse_btn.clicked.connect(self.browse_metric_export_chart_output)
+
+        metric_export_chart_path_layout = QHBoxLayout()
+        metric_export_chart_path_layout.addWidget(self.metric_export_chart_path_edit)
+        metric_export_chart_path_layout.addWidget(self.metric_export_chart_browse_btn)
+
+        self.metric_export_file_label = QLabel("指标导出文件: 未启用")
+        self.metric_export_file_label.setStyleSheet("color: #666;")
+        self.metric_export_file_label.setWordWrap(True)
+
+        export_layout.addWidget(self.metric_export_enable_checkbox)
+        export_layout.addWidget(self.metric_export_select_btn)
+        export_layout.addLayout(metric_export_path_layout)
+        export_layout.addWidget(self.metric_export_chart_checkbox)
+        export_layout.addLayout(metric_export_chart_path_layout)
+        export_layout.addWidget(self.metric_export_file_label)
+        export_group.setLayout(export_layout)
+
+        ml_layout.addWidget(inference_group)
+        ml_layout.addWidget(training_group)
+        ml_layout.addWidget(export_group)
+        ml_layout.addStretch()
+        self.ml_window.setLayout(ml_layout)
+
+    def open_ml_center_window(self):
+        """打开机器学习配置子窗口。"""
+        if not hasattr(self, 'ml_window') or self.ml_window is None:
+            return
+        self.ml_window.show()
+        self.ml_window.raise_()
+        self.ml_window.activateWindow()
     
     def init_components(self):
         """初始化组件"""
@@ -485,6 +675,20 @@ QDockWidget::float-button {
         # 分析模块默认关闭，避免影响现有主链路。
         self.arterial_pipeline = self._build_arterial_pipeline_from_ui(enabled=False)
         self.latest_arterial_result = None
+        self.latest_training_metrics = {
+            'accuracy': None,
+            'macro_f1': None,
+            'confusion_summary': '',
+        }
+        self.train_start_ts = None
+        self.train_elapsed_timer = QTimer(self)
+        self.train_elapsed_timer.timeout.connect(self._update_train_elapsed_text)
+        self.metrics_export_file = None
+        self.metrics_export_fp = None
+        self.metrics_export_writer = None
+        self.metrics_export_fields = []
+        self.metrics_export_rows = []
+        self.last_metrics_export_summary = "指标导出文件: 未启用"
         self.data_count = 0
         self.auto_save_enabled = False
         self.last_data_time = None  # 记录最后接收数据的时间
@@ -784,6 +988,8 @@ QDockWidget::float-button {
                 f"健康评估: {label} | score {score:.2f} | 风险 {risk} | 模式 {mode}"
             )
 
+        self._append_metrics_export_row(result)
+
     def _reset_arterial_ui_state(self):
         """重置动脉分析显示状态。"""
         self.latest_arterial_result = None
@@ -815,6 +1021,9 @@ QDockWidget::float-button {
             enabled = self.analysis_enable_checkbox.isChecked() if hasattr(self, 'analysis_enable_checkbox') else False
 
         model_path = self.model_path_edit.text().strip() if hasattr(self, 'model_path_edit') else ""
+        model_preference = self._ui_model_choice_to_preference(
+            self.inference_model_combo.currentText() if hasattr(self, 'inference_model_combo') else "自动加载(按模型文件)"
+        )
 
         return ArterialHealthPipeline(
             enabled=bool(enabled),
@@ -822,6 +1031,7 @@ QDockWidget::float-button {
             grid_height=grid_height,
             analysis_stride=analysis_stride,
             model_path=model_path,
+            model_preference=model_preference,
         )
 
     def apply_analysis_config(self):
@@ -832,18 +1042,28 @@ QDockWidget::float-button {
         model_status = self.arterial_pipeline.get_model_status()
         model_mode = str(model_status.get('mode', 'rule'))
         model_error = str(model_status.get('load_error', '') or '')
+        model_requested = str(model_status.get('requested_model', 'auto'))
+        model_detected = str(model_status.get('detected_model', 'unknown'))
 
         if self.arterial_pipeline.enabled:
             if model_mode == 'external':
-                QMessageBox.information(self, "动脉分析", f"分析已启用，点阵: {grid_info}\n模型状态: external（已加载）")
+                QMessageBox.information(
+                    self,
+                    "动脉分析",
+                    f"分析已启用，点阵: {grid_info}\n模型状态: external（已加载）\n请求模型: {model_requested} | 检测模型: {model_detected}",
+                )
             elif self.model_path_edit.text().strip():
                 QMessageBox.warning(
                     self,
                     "动脉分析",
-                    f"分析已启用，点阵: {grid_info}\n模型状态: rule（已降级）\n原因: {model_error or '未知错误'}",
+                    f"分析已启用，点阵: {grid_info}\n模型状态: rule（已降级）\n请求模型: {model_requested} | 检测模型: {model_detected}\n原因: {model_error or '未知错误'}",
                 )
             else:
-                QMessageBox.information(self, "动脉分析", f"分析已启用，点阵: {grid_info}\n模型状态: rule（未配置模型）")
+                QMessageBox.information(
+                    self,
+                    "动脉分析",
+                    f"分析已启用，点阵: {grid_info}\n模型状态: rule（未配置模型）\n请求模型: {model_requested}",
+                )
         else:
             QMessageBox.information(self, "动脉分析", f"分析已禁用，点阵: {grid_info}")
 
@@ -930,17 +1150,615 @@ QDockWidget::float-button {
             self.model_path_edit.setText(file_path)
             self._validate_selected_model_path(show_success=True)
 
+    def on_inference_model_changed(self, _: str):
+        """推理模型类型改变时，若已选择模型文件则即时重新校验。"""
+        if self.model_path_edit.text().strip():
+            self._validate_selected_model_path(show_success=False)
+
+    def _ui_model_choice_to_preference(self, choice_text: str) -> str:
+        mapping = {
+            "自动加载(按模型文件)": "auto",
+            "规则引擎": "rule",
+            "随机森林": "random_forest",
+            "逻辑回归": "logistic_regression",
+            "支持向量机(SVM)": "svm",
+            "梯度提升树": "gradient_boosting",
+        }
+        return mapping.get(choice_text, "auto")
+
+    def _ui_training_choice_to_arg(self, choice_text: str) -> str:
+        mapping = {
+            "随机森林": "rf",
+            "逻辑回归": "logreg",
+            "支持向量机(SVM)": "svm",
+            "梯度提升树": "gbdt",
+        }
+        return mapping.get(choice_text, "rf")
+
+    def _model_arg_to_ui_choice(self, model_arg: str) -> str:
+        mapping = {
+            "rf": "随机森林",
+            "logreg": "逻辑回归",
+            "svm": "支持向量机(SVM)",
+            "gbdt": "梯度提升树",
+        }
+        return mapping.get(model_arg, "随机森林")
+
+    def _safe_float(self, value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _summarize_confusion_matrix(self, matrix, classes) -> str:
+        if not isinstance(matrix, list) or not matrix or not isinstance(matrix[0], list):
+            return "混淆矩阵摘要: 不可用"
+
+        row_count = len(matrix)
+        col_count = len(matrix[0]) if matrix[0] else 0
+        if row_count == 0 or col_count == 0:
+            return "混淆矩阵摘要: 空矩阵"
+
+        total = 0
+        diag_correct = 0
+        row_sums = []
+        col_sums = [0 for _ in range(col_count)]
+
+        for r_idx, row in enumerate(matrix):
+            if not isinstance(row, list) or len(row) != col_count:
+                return "混淆矩阵摘要: 矩阵格式不规则"
+
+            row_total = 0
+            for c_idx, raw_cell in enumerate(row):
+                cell = self._safe_float(raw_cell)
+                if cell is None:
+                    return "混淆矩阵摘要: 包含非数值项"
+                row_total += cell
+                col_sums[c_idx] += cell
+                total += cell
+                if r_idx == c_idx:
+                    diag_correct += cell
+            row_sums.append(row_total)
+
+        overall = diag_correct / total if total > 0 else 0.0
+        parts = [f"规模 {row_count}x{col_count}，总样本 {int(total)}，对角正确率 {overall:.2%}"]
+
+        detail_rows = min(row_count, 4)
+        for i in range(detail_rows):
+            label = str(classes[i]) if isinstance(classes, list) and i < len(classes) else str(i)
+            tp = self._safe_float(matrix[i][i]) or 0.0
+            recall = (tp / row_sums[i]) if row_sums[i] > 0 else 0.0
+            precision = (tp / col_sums[i]) if col_sums[i] > 0 else 0.0
+            parts.append(f"{label}: 召回 {recall:.2%}，精确 {precision:.2%}")
+
+        if row_count > detail_rows:
+            parts.append(f"其余 {row_count - detail_rows} 类已省略")
+
+        return "；".join(parts)
+
+    def _read_training_meta_summary(self, meta_output: str):
+        metrics_text = "测试指标: 暂无"
+        matrix_text = "混淆矩阵摘要: 暂无"
+        if not meta_output or not os.path.isfile(meta_output):
+            return metrics_text, matrix_text
+
+        try:
+            with open(meta_output, "r", encoding="utf-8") as fp:
+                meta = json.load(fp)
+        except (OSError, json.JSONDecodeError):
+            return metrics_text, "混淆矩阵摘要: meta 文件读取失败"
+
+        metrics = meta.get("metrics", {})
+        accuracy = self._safe_float(metrics.get("accuracy"))
+        macro_f1 = self._safe_float(metrics.get("macro avg", {}).get("f1-score"))
+        if accuracy is not None or macro_f1 is not None:
+            acc_text = "N/A" if accuracy is None else f"{accuracy:.4f}"
+            f1_text = "N/A" if macro_f1 is None else f"{macro_f1:.4f}"
+            metrics_text = f"测试指标: accuracy={acc_text}，macro-f1={f1_text}"
+
+        matrix = meta.get("confusion_matrix")
+        classes = meta.get("classes", [])
+        matrix_text = self._summarize_confusion_matrix(matrix, classes)
+        return metrics_text, matrix_text
+
+    def _extract_training_meta_values(self, meta_output: str):
+        values = {
+            'accuracy': None,
+            'macro_f1': None,
+            'confusion_summary': '',
+        }
+        if not meta_output or not os.path.isfile(meta_output):
+            return values
+
+        try:
+            with open(meta_output, "r", encoding="utf-8") as fp:
+                meta = json.load(fp)
+        except (OSError, json.JSONDecodeError):
+            return values
+
+        metrics = meta.get("metrics", {})
+        values['accuracy'] = self._safe_float(metrics.get("accuracy"))
+        values['macro_f1'] = self._safe_float(metrics.get("macro avg", {}).get("f1-score"))
+        values['confusion_summary'] = self._summarize_confusion_matrix(
+            meta.get("confusion_matrix"),
+            meta.get("classes", []),
+        )
+        return values
+
+    def _selected_metric_export_fields(self):
+        fields = []
+        for _, field_key, _ in self.METRIC_EXPORT_ITEMS:
+            checkbox = self.metric_export_checkboxes.get(field_key)
+            if checkbox is not None and checkbox.isChecked():
+                fields.append(field_key)
+        return fields
+
+    def _create_metric_export_popup(self):
+        self.metric_export_popup = QWidget(self.ml_window, Qt.Popup)
+        popup_layout = QVBoxLayout()
+        popup_layout.setContentsMargins(8, 8, 8, 8)
+        popup_layout.setSpacing(6)
+
+        for label, field_key, default_checked in self.METRIC_EXPORT_ITEMS:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(default_checked)
+            checkbox.toggled.connect(self._update_metric_export_selector_text)
+            self.metric_export_checkboxes[field_key] = checkbox
+            popup_layout.addWidget(checkbox)
+
+        self.metric_export_popup.setLayout(popup_layout)
+        self.metric_export_popup.setMinimumWidth(300)
+
+    def show_metric_export_popup(self):
+        if not hasattr(self, 'metric_export_popup'):
+            return
+        button = self.metric_export_select_btn
+        global_pos = button.mapToGlobal(button.rect().bottomLeft())
+        self.metric_export_popup.move(global_pos)
+        self.metric_export_popup.show()
+        self.metric_export_popup.raise_()
+        self.metric_export_popup.activateWindow()
+
+    def _update_metric_export_selector_text(self):
+        selected_count = len(self._selected_metric_export_fields())
+        self.metric_export_select_btn.setText(f"导出指标选择（已选 {selected_count} 项）")
+
+    def browse_metric_export_output(self):
+        """浏览指标导出文件路径。"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "选择指标导出路径",
+            self.metric_export_path_edit.text() or os.path.join("data", "metrics_export.csv"),
+            "CSV文件 (*.csv);;所有文件 (*)",
+        )
+        if file_path:
+            self.metric_export_path_edit.setText(file_path)
+
+    def browse_metric_export_chart_output(self):
+        """浏览指标图表导出路径。"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "选择指标图表导出路径",
+            self.metric_export_chart_path_edit.text() or os.path.join("data", "metrics_chart.png"),
+            "PNG图片 (*.png);;所有文件 (*)",
+        )
+        if file_path:
+            self.metric_export_chart_path_edit.setText(file_path)
+
+    def _resolve_metric_export_file_path(self):
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        custom_path = self.metric_export_path_edit.text().strip() if hasattr(self, 'metric_export_path_edit') else ""
+        if custom_path:
+            path = custom_path
+            if not os.path.isabs(path):
+                path = os.path.abspath(os.path.join(project_root, path))
+            root, ext = os.path.splitext(path)
+            if not ext:
+                path = f"{root}.csv"
+            target_dir = os.path.dirname(path)
+            if target_dir:
+                os.makedirs(target_dir, exist_ok=True)
+            return path
+
+        save_dir = self.save_path_edit.text().strip() or "data"
+        if not os.path.isabs(save_dir):
+            save_dir = os.path.abspath(os.path.join(project_root, save_dir))
+        os.makedirs(save_dir, exist_ok=True)
+        file_name = f"metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        return os.path.join(save_dir, file_name)
+
+    def _resolve_metric_chart_output_path(self, csv_path: str):
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        custom_path = self.metric_export_chart_path_edit.text().strip() if hasattr(self, 'metric_export_chart_path_edit') else ""
+        if custom_path:
+            path = custom_path
+            if not os.path.isabs(path):
+                path = os.path.abspath(os.path.join(project_root, path))
+            root, ext = os.path.splitext(path)
+            if ext.lower() != '.png':
+                path = f"{root}.png"
+            target_dir = os.path.dirname(path)
+            if target_dir:
+                os.makedirs(target_dir, exist_ok=True)
+            return path
+
+        base, _ = os.path.splitext(csv_path)
+        return f"{base}_chart.png"
+
+    def _start_metrics_export_if_needed(self):
+        self._stop_metrics_export()
+
+        if not hasattr(self, 'metric_export_enable_checkbox') or not self.metric_export_enable_checkbox.isChecked():
+            self.last_metrics_export_summary = "指标导出文件: 未启用"
+            self.metric_export_file_label.setText(self.last_metrics_export_summary)
+            return {
+                'started': False,
+                'csv_path': None,
+                'reason': self.last_metrics_export_summary,
+            }
+
+        selected_fields = self._selected_metric_export_fields()
+        if not selected_fields:
+            self.last_metrics_export_summary = "指标导出文件: 未选择任何指标"
+            self.metric_export_file_label.setText(self.last_metrics_export_summary)
+            return {
+                'started': False,
+                'csv_path': None,
+                'reason': self.last_metrics_export_summary,
+            }
+
+        file_path = self._resolve_metric_export_file_path()
+
+        try:
+            self.metrics_export_fp = open(file_path, 'w', newline='', encoding='utf-8-sig')
+            self.metrics_export_writer = csv.DictWriter(
+                self.metrics_export_fp,
+                fieldnames=['timestamp'] + selected_fields,
+            )
+            self.metrics_export_writer.writeheader()
+            self.metrics_export_file = file_path
+            self.metrics_export_fields = selected_fields
+            self.metrics_export_rows = []
+            self.fsm_debug_print(
+                f"[EXPORT][START] csv={file_path} fields={selected_fields} chart_enabled={self.metric_export_chart_checkbox.isChecked()}"
+            )
+            self.last_metrics_export_summary = f"指标导出文件: {file_path}"
+            self.metric_export_file_label.setText(self.last_metrics_export_summary)
+            return {
+                'started': True,
+                'csv_path': file_path,
+                'reason': '',
+            }
+        except OSError as e:
+            self.metrics_export_fp = None
+            self.metrics_export_writer = None
+            self.metrics_export_file = None
+            self.metrics_export_fields = []
+            self.fsm_debug_print(f"[EXPORT][START][ERROR] path={file_path} error={e}")
+            self.last_metrics_export_summary = f"指标导出文件: 打开失败 ({e})"
+            self.metric_export_file_label.setText(self.last_metrics_export_summary)
+            return {
+                'started': False,
+                'csv_path': None,
+                'reason': self.last_metrics_export_summary,
+            }
+
+    def on_metric_export_chart_toggled(self, checked: bool):
+        """勾选PNG导出时自动开启CSV导出，避免配置矛盾。"""
+        if checked and not self.metric_export_enable_checkbox.isChecked():
+            self.metric_export_enable_checkbox.setChecked(True)
+
+    def on_metric_export_path_changed(self, _: str):
+        """导出路径修改后，若会话已运行则立即切换到新路径。"""
+        if self.metrics_export_writer is not None:
+            self.fsm_debug_print("[EXPORT][PATH] csv_path_changed -> restart session")
+            self._start_metrics_export_if_needed()
+        else:
+            if self.metric_export_enable_checkbox.isChecked():
+                target = self._resolve_metric_export_file_path()
+                self.metric_export_file_label.setText(f"指标导出文件: {target}")
+
+    def on_metric_chart_path_changed(self, _: str):
+        """图表路径修改提示。"""
+        if self.metric_export_chart_checkbox.isChecked() and self.metric_export_enable_checkbox.isChecked():
+            target = self._resolve_metric_chart_output_path(self._resolve_metric_export_file_path())
+            self.metric_export_file_label.setText(f"指标导出文件: {self._resolve_metric_export_file_path()}\n图表导出文件: {target}")
+
+    def on_metric_export_enabled_changed(self, checked: bool):
+        """保存过程中允许动态启停指标导出。"""
+        if not self.data_source_manager.is_connected():
+            if not checked:
+                self.last_metrics_export_summary = "指标导出文件: 未启用"
+                self.metric_export_file_label.setText(self.last_metrics_export_summary)
+            return
+
+        if checked:
+            start_result = self._start_metrics_export_if_needed()
+            if start_result.get('started'):
+                QMessageBox.information(self, "指标导出", f"已启用指标导出:\n{start_result.get('csv_path')}")
+            else:
+                QMessageBox.warning(self, "指标导出", str(start_result.get('reason') or '启动失败'))
+        else:
+            stop_result = self._stop_metrics_export()
+            summary = str(stop_result.get('summary') or '指标导出已关闭')
+            QMessageBox.information(self, "指标导出", summary)
+
+    def _ensure_metrics_export_runtime(self, silent: bool = True):
+        """按连接状态与导出开关自动维护指标导出会话。"""
+        connected = self.data_source_manager.is_connected()
+        enabled = self.metric_export_enable_checkbox.isChecked() if hasattr(self, 'metric_export_enable_checkbox') else False
+
+        if connected and enabled:
+            if self.metrics_export_writer is None:
+                start_result = self._start_metrics_export_if_needed()
+                if not silent and not start_result.get('started'):
+                    QMessageBox.warning(self, "指标导出", str(start_result.get('reason') or '指标导出未成功启动'))
+        else:
+            if self.metrics_export_writer is not None:
+                self._stop_metrics_export()
+
+    def _stop_metrics_export(self):
+        file_path = self.metrics_export_file
+        rows_snapshot = self.metrics_export_rows.copy()
+        fields_snapshot = self.metrics_export_fields.copy()
+        self.fsm_debug_print(
+            f"[EXPORT][STOP] csv={file_path} rows={len(rows_snapshot)} fields={fields_snapshot} chart_enabled={self.metric_export_chart_checkbox.isChecked() if hasattr(self, 'metric_export_chart_checkbox') else False}"
+        )
+        if self.metrics_export_fp is not None:
+            try:
+                self.metrics_export_fp.close()
+            except OSError:
+                pass
+
+        chart_path = None
+        chart_reason = ""
+        chart_enabled = hasattr(self, 'metric_export_chart_checkbox') and self.metric_export_chart_checkbox.isChecked()
+        if chart_enabled:
+            if not file_path:
+                chart_reason = "未创建指标CSV导出"
+            else:
+                chart_path = self._resolve_metric_chart_output_path(file_path)
+                exported = self._export_metrics_chart_image(rows_snapshot, fields_snapshot, chart_path)
+                if not exported:
+                    if not rows_snapshot:
+                        chart_reason = "保存期间没有可导出的分析样本"
+                    elif not fields_snapshot:
+                        chart_reason = "未选择导出指标"
+                    else:
+                        chart_reason = "所选指标均为非数值或保存失败"
+                    placeholder_ok = self._export_chart_placeholder(chart_path, chart_reason)
+                    if placeholder_ok:
+                        self.fsm_debug_print(f"[EXPORT][CHART] output={chart_path} (placeholder)")
+                    else:
+                        self.fsm_debug_print(
+                            f"[EXPORT][CHART][ERROR] output={chart_path} reason={chart_reason}"
+                        )
+                        chart_path = None
+                else:
+                    self.fsm_debug_print(f"[EXPORT][CHART] output={chart_path}")
+
+        self.metrics_export_fp = None
+        self.metrics_export_writer = None
+        self.metrics_export_file = None
+        self.metrics_export_fields = []
+        self.metrics_export_rows = []
+
+        if file_path and chart_path:
+            self.last_metrics_export_summary = f"指标导出文件: {file_path}\n图表导出文件: {chart_path}"
+        elif file_path and chart_reason:
+            if chart_path:
+                self.last_metrics_export_summary = f"指标导出文件: {file_path}\n图表导出文件: {chart_path}（占位图：{chart_reason}）"
+            else:
+                self.last_metrics_export_summary = f"指标导出文件: {file_path}\n未生成图表：{chart_reason}"
+        elif file_path:
+            self.last_metrics_export_summary = f"指标导出文件: {file_path}"
+        elif chart_reason:
+            self.last_metrics_export_summary = chart_reason
+        else:
+            self.last_metrics_export_summary = "指标导出文件: 未启用"
+
+        self.metric_export_file_label.setText(self.last_metrics_export_summary)
+        return {
+            'csv_path': file_path,
+            'chart_path': chart_path,
+            'chart_reason': chart_reason,
+            'summary': self.last_metrics_export_summary,
+        }
+
+    def _export_chart_placeholder(self, output_path: str, reason: str) -> bool:
+        image = QImage(1200, 680, QImage.Format_ARGB32)
+        image.fill(QColor(255, 255, 255))
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(QPen(QColor(40, 40, 40), 2))
+        painter.drawRect(40, 40, 1120, 600)
+        painter.setPen(QPen(QColor(70, 70, 70), 1))
+        painter.drawText(80, 120, "指标趋势图（占位图）")
+        painter.drawText(80, 170, f"原因: {reason}")
+        painter.drawText(80, 220, "提示: 请确认已启用分析并接收到有效数据帧后再导出。")
+        painter.end()
+        try:
+            return bool(image.save(output_path, "PNG"))
+        except Exception:
+            return False
+
+    def _export_metrics_chart_image(self, rows, fields, output_path: str) -> bool:
+        if not rows or not fields:
+            return False
+
+        numeric_series = {}
+        for field in fields:
+            values = []
+            for row in rows:
+                value = self._safe_float(row.get(field))
+                values.append(value)
+            if any(v is not None for v in values):
+                numeric_series[field] = values
+
+        if not numeric_series:
+            return False
+
+        width = 1200
+        height = 680
+        margin_left = 70
+        margin_right = 30
+        margin_top = 40
+        margin_bottom = 70
+        plot_w = width - margin_left - margin_right
+        plot_h = height - margin_top - margin_bottom
+
+        image = QImage(width, height, QImage.Format_ARGB32)
+        image.fill(QColor(255, 255, 255))
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        painter.setPen(QPen(QColor(40, 40, 40), 1))
+        painter.drawLine(margin_left, margin_top + plot_h, margin_left + plot_w, margin_top + plot_h)
+        painter.drawLine(margin_left, margin_top, margin_left, margin_top + plot_h)
+
+        min_v = None
+        max_v = None
+        for values in numeric_series.values():
+            for v in values:
+                if v is None:
+                    continue
+                min_v = v if min_v is None else min(min_v, v)
+                max_v = v if max_v is None else max(max_v, v)
+
+        if min_v is None or max_v is None:
+            painter.end()
+            return False
+
+        if abs(max_v - min_v) < 1e-12:
+            max_v += 1.0
+            min_v -= 1.0
+
+        color_pool = [
+            QColor(220, 20, 60), QColor(30, 144, 255), QColor(34, 139, 34),
+            QColor(255, 140, 0), QColor(138, 43, 226), QColor(47, 79, 79),
+            QColor(199, 21, 133), QColor(0, 128, 128), QColor(70, 130, 180),
+        ]
+
+        total_points = max(2, len(rows))
+        legend_y = 20
+        for idx, (field, values) in enumerate(numeric_series.items()):
+            color = color_pool[idx % len(color_pool)]
+            painter.setPen(QPen(color, 2))
+
+            prev_x = None
+            prev_y = None
+            for i, v in enumerate(values):
+                if v is None:
+                    prev_x = None
+                    prev_y = None
+                    continue
+                x = margin_left + int((i / (total_points - 1)) * plot_w)
+                ratio = (v - min_v) / (max_v - min_v)
+                y = margin_top + int((1.0 - ratio) * plot_h)
+                if prev_x is not None:
+                    painter.drawLine(prev_x, prev_y, x, y)
+                prev_x, prev_y = x, y
+
+            painter.setPen(QPen(color, 8))
+            painter.drawPoint(margin_left + idx * 120, legend_y)
+            painter.setPen(QPen(QColor(30, 30, 30), 1))
+            painter.drawText(margin_left + 10 + idx * 120, legend_y + 5, field)
+
+        painter.setPen(QPen(QColor(60, 60, 60), 1))
+        painter.drawText(margin_left, height - 30, "样本序号")
+        painter.drawText(10, margin_top + 10, "数值")
+        painter.drawText(width - 280, height - 10, f"范围: [{min_v:.4f}, {max_v:.4f}]")
+        painter.end()
+
+        try:
+            return bool(image.save(output_path, "PNG"))
+        except Exception:
+            return False
+
+    def _append_metrics_export_row(self, result):
+        if self.metrics_export_writer is None:
+            return
+
+        metrics = result.get('metrics', {}) or {}
+        prediction = result.get('prediction', {}) or {}
+        row = {
+            'timestamp': result.get('timestamp', 0.0),
+        }
+
+        if 'train_accuracy' in self.metrics_export_fields:
+            row['train_accuracy'] = self.latest_training_metrics.get('accuracy')
+        if 'train_macro_f1' in self.metrics_export_fields:
+            row['train_macro_f1'] = self.latest_training_metrics.get('macro_f1')
+        if 'train_confusion_summary' in self.metrics_export_fields:
+            row['train_confusion_summary'] = self.latest_training_metrics.get('confusion_summary', '')
+
+        if 'health_bpm' in self.metrics_export_fields:
+            row['health_bpm'] = metrics.get('bpm')
+        if 'health_amplitude' in self.metrics_export_fields:
+            row['health_amplitude'] = metrics.get('amplitude')
+        if 'health_consistency' in self.metrics_export_fields:
+            row['health_consistency'] = metrics.get('consistency')
+        if 'health_repeatability' in self.metrics_export_fields:
+            row['health_repeatability'] = metrics.get('repeatability')
+
+        if 'eval_label' in self.metrics_export_fields:
+            row['eval_label'] = prediction.get('label')
+        if 'eval_score' in self.metrics_export_fields:
+            row['eval_score'] = prediction.get('score')
+        if 'eval_risk_level' in self.metrics_export_fields:
+            row['eval_risk_level'] = prediction.get('risk_level')
+        if 'eval_mode' in self.metrics_export_fields:
+            row['eval_mode'] = prediction.get('mode')
+
+        try:
+            self.metrics_export_writer.writerow(row)
+            self.metrics_export_fp.flush()
+            self.metrics_export_rows.append(dict(row))
+            if len(self.metrics_export_rows) in (1, 10, 100):
+                self.fsm_debug_print(
+                    f"[EXPORT][APPEND] csv={self.metrics_export_file} rows={len(self.metrics_export_rows)}"
+                )
+        except OSError:
+            self._stop_metrics_export()
+            self.metric_export_file_label.setText("指标导出文件: 写入失败，已停止")
+
+    def _update_train_elapsed_text(self):
+        if self.train_start_ts is None:
+            return
+        elapsed_s = max(0.0, time.time() - self.train_start_ts)
+        self.train_metrics_summary_label.setText(f"测试指标: 训练中... 已运行 {elapsed_s:.1f}s")
+
+    def _handle_train_finished_signal(self, payload):
+        if not isinstance(payload, dict):
+            return
+        self._on_train_model_finished(
+            bool(payload.get('success', False)),
+            str(payload.get('dataset_path', '')),
+            str(payload.get('model_output', '')),
+            str(payload.get('meta_output', '')),
+            str(payload.get('model_arg', 'rf')),
+            str(payload.get('stdout', '')),
+            str(payload.get('stderr', '')),
+        )
+
     def _validate_selected_model_path(self, show_success: bool = False) -> bool:
         """校验模型文件可读性。"""
         model_path = self.model_path_edit.text().strip()
         if not model_path:
             return False
 
-        checker = ModelRunner(model_path=model_path)
+        checker = ModelRunner(
+            model_path=model_path,
+            model_preference=self._ui_model_choice_to_preference(self.inference_model_combo.currentText()),
+        )
         status = checker.get_status()
         if str(status.get('mode')) == 'external' and bool(status.get('has_model')):
             if show_success:
-                QMessageBox.information(self, "模型校验", "模型文件校验通过，可用于外部推理。")
+                QMessageBox.information(
+                    self,
+                    "模型校验",
+                    f"模型文件校验通过，可用于外部推理。\n模型类型: {status.get('detected_model', 'unknown')}",
+                )
             return True
 
         QMessageBox.warning(
@@ -949,6 +1767,176 @@ QDockWidget::float-button {
             f"模型文件不可用，将在运行时降级为规则模式。\n原因: {status.get('load_error') or '未知错误'}",
         )
         return False
+
+    def browse_train_dataset(self):
+        """浏览训练数据CSV。"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择训练数据CSV",
+            self.train_dataset_edit.text() or os.getcwd(),
+            "CSV文件 (*.csv);;所有文件 (*)",
+        )
+        if file_path:
+            self.train_dataset_edit.setText(file_path)
+
+    def browse_train_output(self):
+        """浏览训练模型输出文件。"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "选择模型输出路径",
+            self.train_output_edit.text() or os.path.join("data", "models", "arterial_model.joblib"),
+            "模型文件 (*.joblib);;所有文件 (*)",
+        )
+        if file_path:
+            self.train_output_edit.setText(file_path)
+
+    def train_model_from_ui(self):
+        """在上位机中触发训练脚本，完成后自动加载模型。"""
+        if self.train_model_busy:
+            QMessageBox.information(self, "训练任务", "训练任务正在执行，请稍候。")
+            return
+
+        dataset_path = self.train_dataset_edit.text().strip()
+        model_output = self.train_output_edit.text().strip()
+        if not dataset_path:
+            QMessageBox.warning(self, "训练任务", "请先选择训练数据CSV。")
+            return
+        if not model_output:
+            QMessageBox.warning(self, "训练任务", "请先设置模型输出路径。")
+            return
+
+        test_size_text = self.train_test_size_edit.text().strip() or "0.2"
+        seed_text = self.train_seed_edit.text().strip() or "42"
+        try:
+            test_size = float(test_size_text)
+            if test_size <= 0 or test_size >= 1:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "训练任务", "测试集比例必须是 0 到 1 之间的小数（建议0.1~0.4）。")
+            return
+
+        try:
+            seed = int(seed_text)
+        except ValueError:
+            QMessageBox.warning(self, "训练任务", "随机种子必须是整数。")
+            return
+
+        extra_args_text = self.train_extra_args_edit.text().strip()
+        try:
+            extra_args = shlex.split(extra_args_text) if extra_args_text else []
+        except ValueError as e:
+            QMessageBox.warning(self, "训练任务", f"高级参数格式错误: {e}")
+            return
+
+        model_arg = self._ui_training_choice_to_arg(self.train_model_type_combo.currentText())
+        self.train_model_busy = True
+        self.train_start_ts = time.time()
+        self.train_elapsed_timer.start(500)
+        self.train_model_btn.setEnabled(False)
+        self.train_model_btn.setText("训练中...")
+        self.train_metrics_summary_label.setText("测试指标: 训练中...")
+        self.train_conf_matrix_label.setText("混淆矩阵摘要: 训练中...")
+
+        worker = threading.Thread(
+            target=self._train_model_worker,
+            args=(dataset_path, model_output, model_arg, test_size, seed, extra_args),
+            daemon=True,
+        )
+        worker.start()
+
+    def _train_model_worker(self, dataset_path: str, model_output: str, model_arg: str, test_size: float, seed: int, extra_args):
+        """后台执行训练脚本，完成后切回主线程更新UI。"""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        script_path = os.path.join(project_root, "tools", "train_arterial_model.py")
+        base_name, _ = os.path.splitext(model_output)
+        meta_output = f"{base_name}_meta.json"
+
+        cmd = [
+            sys.executable,
+            script_path,
+            "--input",
+            dataset_path,
+            "--model-output",
+            model_output,
+            "--meta-output",
+            meta_output,
+            "--model-type",
+            model_arg,
+            "--test-size",
+            str(test_size),
+            "--seed",
+            str(seed),
+        ]
+        if extra_args:
+            cmd.extend(extra_args)
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            success = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            success = False
+            stdout = ""
+            stderr = "训练超时（300秒），已终止。可先减小数据量或改用更快模型（如logreg/rf）。"
+        except Exception as e:
+            success = False
+            stdout = ""
+            stderr = str(e)
+
+        self.train_finished_signal.emit(
+            {
+                'success': success,
+                'dataset_path': dataset_path,
+                'model_output': model_output,
+                'meta_output': meta_output,
+                'model_arg': model_arg,
+                'stdout': stdout,
+                'stderr': stderr,
+            }
+        )
+
+    def _on_train_model_finished(
+        self,
+        success: bool,
+        dataset_path: str,
+        model_output: str,
+        meta_output: str,
+        model_arg: str,
+        stdout: str,
+        stderr: str,
+    ):
+        """训练完成后的UI反馈与自动加载。"""
+        self.train_elapsed_timer.stop()
+        self.train_start_ts = None
+        self.train_model_busy = False
+        self.train_model_btn.setEnabled(True)
+        self.train_model_btn.setText("开始训练并加载")
+
+        if not success:
+            detail = (stderr or stdout or "未知错误")[-1200:]
+            self.train_metrics_summary_label.setText("测试指标: 训练失败")
+            self.train_conf_matrix_label.setText("混淆矩阵摘要: 训练失败")
+            QMessageBox.warning(self, "训练失败", f"训练脚本执行失败。\n数据集: {dataset_path}\n详情:\n{detail}")
+            return
+
+        metrics_text, matrix_text = self._read_training_meta_summary(meta_output)
+        self.train_metrics_summary_label.setText(metrics_text)
+        self.train_conf_matrix_label.setText(matrix_text)
+        self.latest_training_metrics = self._extract_training_meta_values(meta_output)
+
+        self.model_path_edit.setText(model_output)
+        self.inference_model_combo.setCurrentText(self._model_arg_to_ui_choice(model_arg))
+        self._validate_selected_model_path(show_success=False)
+        self.apply_analysis_config()
+        QMessageBox.information(self, "训练完成", "模型训练成功，已自动回填模型路径并应用推理配置。")
     
     def toggle_saving(self):
         """切换数据保存状态"""
@@ -962,8 +1950,16 @@ QDockWidget::float-button {
 
         if self.data_source_manager.is_saving():
             self.data_source_manager.stop_saving()
+            export_result = self._stop_metrics_export()
             self.save_btn.setText("开始保存")
             self.save_file_label.setText("保存文件: 无")
+            if export_result.get('csv_path'):
+                detail = f"CSV: {export_result.get('csv_path')}"
+                if export_result.get('chart_path'):
+                    detail += f"\nPNG: {export_result.get('chart_path')}"
+                elif export_result.get('chart_reason'):
+                    detail += f"\n{export_result.get('chart_reason')}"
+                QMessageBox.information(self, "导出完成", detail)
             self.auto_save_enabled = False
         else:
             save_path = self.save_path_edit.text()
@@ -971,9 +1967,12 @@ QDockWidget::float-button {
                 self.data_source_manager.set_save_path(save_path)
             success = self.data_source_manager.start_saving()
             if success:
+                export_start_result = self._start_metrics_export_if_needed() if self.metric_export_enable_checkbox.isChecked() else {'started': False, 'reason': ''}
                 self.save_btn.setText("停止保存")
                 save_file = self.data_source_manager.get_save_file()
                 self.save_file_label.setText(f"保存文件: {save_file}")
+                if not export_start_result.get('started') and self.metric_export_enable_checkbox.isChecked():
+                    QMessageBox.warning(self, "指标导出", str(export_start_result.get('reason') or '指标导出未成功启动'))
                 self.auto_save_enabled = True
             else:
                 QMessageBox.warning(self, "失败", "启动数据保存失败")
@@ -1086,6 +2085,9 @@ QDockWidget::float-button {
         if not self.state_machine.is_connected():
             return
 
+        # 指标导出与“开始保存”按钮解耦：连接中且勾选导出时自动启动。
+        self._ensure_metrics_export_runtime(silent=True)
+
         # 每轮最多处理固定批次，降低计时和函数调用开销
         max_batch_per_update = 500
         processed_count = 0
@@ -1170,6 +2172,7 @@ QDockWidget::float-button {
 
     def closeEvent(self, event):
         """关闭事件"""
+        self._stop_metrics_export()
         self.data_source_manager.disconnect()
         self.waveform_widget.stop_update()
         event.accept()

@@ -254,14 +254,26 @@ python tools/pressure_matrix_sender.py --mode udp --duration 20 --dump-log data/
 python tools/generate_arterial_dataset.py --output data/arterial_train_dataset.csv --samples 1500 --grid-width 16 --grid-height 16
 
 # 训练随机森林模型并导出
-python tools/train_arterial_model.py --input data/arterial_train_dataset.csv --model-output data/models/arterial_rf.joblib --meta-output data/models/arterial_rf_meta.json
+python tools/train_arterial_model.py --input data/arterial_train_dataset.csv --model-type rf --model-output data/models/arterial_rf.joblib --meta-output data/models/arterial_rf_meta.json
+
+# 训练逻辑回归
+python tools/train_arterial_model.py --input data/arterial_train_dataset.csv --model-type logreg --model-output data/models/arterial_logreg.joblib --meta-output data/models/arterial_logreg_meta.json
+
+# 训练支持向量机
+python tools/train_arterial_model.py --input data/arterial_train_dataset.csv --model-type svm --model-output data/models/arterial_svm.joblib --meta-output data/models/arterial_svm_meta.json
+
+# 训练梯度提升树
+python tools/train_arterial_model.py --input data/arterial_train_dataset.csv --model-type gbdt --model-output data/models/arterial_gbdt.joblib --meta-output data/models/arterial_gbdt_meta.json
 ```
 
 模型使用：
 
-- 在上位机“动脉压力分析”中填写模型路径（`.joblib`）。
-- 点击“应用分析配置”。
-- 运行数据流后将自动切换到外部模型推理（若加载失败会自动降级规则模式）。
+- 在上位机“机器学习中心 -> 在线推理配置”中选择模型类型（自动/规则/随机森林/逻辑回归/SVM/梯度提升树）。
+- 填写模型路径（`.joblib`）并点击“应用推理配置”。
+- 运行数据流后将自动切换到外部模型推理（若加载失败或类型不匹配会自动降级规则模式）。
+- 也可在“机器学习中心 -> 离线训练配置”里直接选择数据集、训练算法并点击“开始训练并加载”。
+- 训练参数可在 UI 中直接设置：`test_size`、`seed`，以及“高级参数”（例如 `--rf-n-estimators 320 --rf-max-depth 12`）。
+- 指标导出支持“下拉多选勾选导出项”，并可手动指定导出 CSV 文件路径（留空则自动命名）。
 
 ## 界面使用
 

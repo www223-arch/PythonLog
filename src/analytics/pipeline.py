@@ -25,6 +25,7 @@ class ArterialHealthPipeline:
         analysis_stride: int = 1,
         history_size: int = 120,
         model_path: str = "",
+        model_preference: str = "auto",
     ):
         self.enabled = bool(enabled)
         self.analysis_stride = max(1, int(analysis_stride))
@@ -33,7 +34,7 @@ class ArterialHealthPipeline:
 
         self.adapter = PressureGridAdapter(grid_width=grid_width, grid_height=grid_height)
         self.extractor = FeatureExtractor()
-        self.runner = ModelRunner(model_path=model_path)
+        self.runner = ModelRunner(model_path=model_path, model_preference=model_preference)
 
         self.matrix_history: Deque[np.ndarray] = deque(maxlen=max(10, int(history_size)))
         self.time_history: Deque[float] = deque(maxlen=max(10, int(history_size)))

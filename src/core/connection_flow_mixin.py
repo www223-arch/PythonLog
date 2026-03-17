@@ -28,6 +28,8 @@ class ConnectionFlowMixin:
         self.pause_btn.setText("暂停")
         # 先停止数据接收线程，避免访问已断开的数据源
         self.stop_receive_thread()
+        if hasattr(self, '_stop_metrics_export'):
+            self._stop_metrics_export()
         # 再断开数据源连接
         self.data_source_manager.disconnect()
         self.status_label.setText("未连接")

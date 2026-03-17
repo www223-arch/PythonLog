@@ -2,6 +2,8 @@ import os
 import sys
 import unittest
 
+import pandas as pd
+
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 SRC_DIR = os.path.join(ROOT_DIR, 'src')
@@ -78,6 +80,22 @@ class ArterialPipelineTests(unittest.TestCase):
         self.assertEqual(status.get('mode'), 'rule')
         self.assertFalse(bool(status.get('has_model')))
         self.assertTrue('不存在' in str(status.get('load_error', '')))
+
+    def test_model_runner_respects_rule_preference(self):
+        runner = ModelRunner(model_path='not_exists_model.joblib', model_preference='rule')
+        status = runner.get_status()
+        self.assertEqual(status.get('mode'), 'rule')
+        self.assertEqual(status.get('requested_model'), 'rule')
+        self.assertEqual(status.get('detected_model'), 'rule')
+
+    def test_model_runner_builds_dataframe_input_with_feature_names(self):
+        runner = ModelRunner(model_path='', feature_order=['b', 'a'])
+        model_input = runner._build_model_input({'a': 1.0, 'b': 2.0})
+
+        self.assertIsInstance(model_input, pd.DataFrame)
+        self.assertEqual(list(model_input.columns), ['b', 'a'])
+        self.assertAlmostEqual(float(model_input.iloc[0]['b']), 2.0)
+        self.assertAlmostEqual(float(model_input.iloc[0]['a']), 1.0)
 
 
 if __name__ == '__main__':

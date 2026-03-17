@@ -1,3 +1,271 @@
+## 2026-03-17 机器学习训练按钮卡死（训练中不结束）排查记录
+
+### 现象
+- 在机器学习子窗口点击“开始训练并加载”后，按钮长期保持“训练中...”。
+- 训练结果弹窗不出现，用户体感为“界面卡死”。
+
+### 复现条件
+- 入口：机器学习中心 -> 离线训练配置。
+- 操作：选择训练数据与输出路径，点击训练。
+- 触发点：后台线程执行训练脚本结束后，UI没有收到完成通知。
+
+### 分析过程
+1. 先核对训练线程逻辑
+- 训练使用 `threading.Thread` 执行 `_train_model_worker`，线程内调用 `subprocess.run`。
+
+2. 检查回主线程路径
+- 原实现在线程内使用 `QTimer.singleShot(0, lambda: _on_train_model_finished(...))`。
+- 该调用依赖调用线程事件循环；Python普通线程通常无Qt事件循环，导致回调可能不触发。
+
+3. 结果表现与代码一致
+- 回调不触发会直接导致 `train_model_busy`、按钮文本、指标文本无法复位。
+
+### 根因结论
+- 根因：跨线程回调机制不可靠，使用了依赖线程事件循环的 `QTimer.singleShot` 回调UI。
+- 次因：缺少训练超时保护，异常长训练时用户无法判断是否真卡死。
+
+### 修复方案
+1. 改为Qt信号跨线程回调
+- 新增 `train_finished_signal`，工作线程结束后 `emit(payload)`。
+- 主线程槽函数统一调用 `_on_train_model_finished` 完成状态复位与UI更新。
+
+2. 增加训练进度体感反馈
+- 训练开始记录时间，`QTimer` 每0.5秒更新“已运行 Xs”。
+
+3. 增加超时保护
+- `subprocess.run(..., timeout=300)`。
+- 超时时返回明确错误提示，避免无限等待。
+
+### 验证结果
+- 命令：`c:/Users/tk/Desktop/Pythonlog/.venv/Scripts/python.exe -m unittest tests/test_arterial_pipeline.py tests/test_regression_layering.py`
+- 结果：`Ran 23 tests ... OK`。
+- 静态检查：`src/app_window.py` 无错误。
+
+### 影响范围
+- 直接影响：机器学习中心离线训练流程（UI状态回调）。
+- 间接影响：无（数据接收、协议解析、保存链路未改动）。
+
+## 2026-03-17 指标PNG导出“看不到文件”排查记录
+
+### 现象
+- 勾选“保存时同步导出趋势图(PNG)”后，用户停止保存却看不到 PNG 文件路径提示。
+- 用户主观感受为“没有导出PNG”。
+
+### 复现条件
+- 机器学习中心开启指标导出与PNG导出。
+- 进行一段时间数据保存后点击“停止保存”。
+
+### 分析过程
+1. 检查导出触发时机
+- PNG 导出在 `_stop_metrics_export()` 中执行，触发点是“停止保存/关闭窗口”。
+
+2. 检查停止保存后的 UI 文本
+- `toggle_saving()` 在调用 `_stop_metrics_export()` 后，又把导出状态文本覆盖为“指标导出文件: 未启用”。
+- 导致即使导出成功，用户也立即看不到路径提示。
+
+3. 检查失败分支可观测性
+- 当保存期间无分析样本或无数值指标可绘图时，原逻辑仅返回失败，不给出明确原因。
+
+### 根因结论
+- 根因A：停止保存流程中状态文本被二次覆盖，掩盖了导出结果。
+- 根因B：PNG导出失败缺少明确原因反馈，用户无法区分“未生成”与“保存失败”。
+
+### 修复方案
+1. 保留导出结果摘要
+- `_stop_metrics_export()` 统一生成 `last_metrics_export_summary`，并保留在界面标签中，不再被立即重置覆盖。
+
+2. 增强导出结果提示
+- 停止保存后弹窗明确显示 CSV 路径与 PNG 路径。
+- 若PNG未生成，明确提示原因（无样本、无指标、非数值等）。
+
+### 验证结果
+- 静态检查：`src/app_window.py` 无错误。
+- 回归测试：`python -m unittest tests/test_arterial_pipeline.py tests/test_regression_layering.py` 通过（23项）。
+
+### 影响范围
+- 仅影响机器学习中心“指标导出”交互反馈链路。
+- 不影响UDP/TCP/串口/文件接收与基础CSV保存功能。
+
+## 2026-03-17 外部模型推理特征名告警（sklearn UserWarning）排查记录
+
+### 现象
+- 运行外部模型（如随机森林）在线推理时，控制台持续出现：
+- `UserWarning: X does not have valid feature names, but RandomForestClassifier was fitted with feature names`
+
+### 复现条件
+- 训练脚本使用带列名的 DataFrame 训练模型并保存。
+- 上位机在线推理阶段加载该模型并持续预测。
+
+### 分析过程
+1. 检查训练输入与推理输入类型
+- 训练阶段 `tools/train_arterial_model.py` 使用 pandas DataFrame（含列名）训练。
+- 推理阶段 `ModelRunner.predict()` 原实现将特征组装为裸向量（list/ndarray）调用 `predict`。
+
+2. 对照 sklearn 行为
+- 当估计器记录了训练时特征名，推理时若输入不含列名，会触发上述告警。
+
+### 根因结论
+- 根因：训练与推理输入结构不一致（训练有特征名，推理无特征名）。
+
+### 修复方案
+1. 推理输入统一为带列名 DataFrame
+- `ModelRunner` 新增 `_build_model_input()`，按 `feature_order`（或排序键）构造一行 DataFrame。
+- `predict/predict_proba` 统一使用 DataFrame 入参。
+
+2. 补充回归测试
+- 新增单测验证模型输入为 DataFrame 且列顺序与 `feature_order` 一致。
+
+### 验证结果
+- 静态检查：`src/analytics/ml/model_runner.py`、`tests/test_arterial_pipeline.py` 无错误。
+- 回归测试：`python -m unittest tests/test_arterial_pipeline.py tests/test_regression_layering.py` 通过（24项）。
+
+### 影响范围
+- 影响范围：外部模型推理输入封装层（ModelRunner）。
+- 不影响规则模式推理、数据采集链路、协议解析与保存链路。
+
+## 2026-03-17 指标导出显示“未启用”且未产出CSV/PNG排查记录
+
+### 现象
+- 用户勾选了CSV/PNG导出，但保存时界面仍显示“指标导出文件: 未启用”，且最终无CSV/PNG文件。
+
+### 复现条件
+- 在机器学习中心勾选导出项后开始保存，或在保存中途调整导出开关。
+
+### 分析过程
+1. 导出启动时机
+- 导出启动仅在“点击开始保存”时执行一次；保存中途再勾选原先不会生效。
+
+2. 配置联动缺失
+- PNG导出与CSV导出存在依赖关系（PNG依赖CSV行数据），但交互上允许只勾PNG未启用CSV，导致用户感知“勾了导出但无结果”。
+
+3. 可观测性不足
+- 启动失败时缺少即时提示，用户只看到静态“未启用”文本。
+
+### 根因结论
+- 根因A：导出配置只在保存启动瞬间读取，缺少保存过程中的动态启停能力。
+- 根因B：PNG/CSV开关联动缺失，容易形成无效配置。
+
+### 修复方案
+1. 增加保存过程中的动态启停
+- `metric_export_enable_checkbox` 变更时，若当前正在保存，立即启动或停止导出，并给出弹窗反馈。
+
+2. 增加配置联动
+- 勾选PNG导出时自动勾选CSV导出，避免配置矛盾。
+
+3. 增强启动结果反馈
+- `_start_metrics_export_if_needed()` 返回结构化结果（started/reason），在开始保存后立即提示失败原因。
+
+### 验证结果
+- 静态检查：`src/app_window.py` 无错误。
+- 回归测试：`python -m unittest tests/test_arterial_pipeline.py tests/test_regression_layering.py` 通过（24项）。
+
+### 影响范围
+- 仅影响机器学习中心指标导出交互流程。
+- 不影响主数据保存链路与分析推理结果。
+
+## 2026-03-17 指标导出路径不可见/难定位排查记录
+
+### 现象
+- 用户勾选导出后，仍难以确认CSV/PNG到底保存到哪里，体感为“没有文件”。
+
+### 复现条件
+- 使用相对路径配置（如 `data`、`metrics_export.csv`）并从不同工作目录启动上位机。
+
+### 分析过程
+1. 路径语义检查
+- 相对路径会受进程工作目录影响，用户可能在预期目录找不到文件。
+
+2. 可观测性检查
+- 原导出链路缺少生命周期级别日志（开始/写入/停止/图表导出）。
+- 用户难以判断是“未启动导出”还是“导出到其他目录”。
+
+### 根因结论
+- 根因A：相对路径在不同启动方式下解析位置不一致。
+- 根因B：导出过程缺少可审计日志，定位成本高。
+
+### 修复方案
+1. 导出路径绝对化
+- 指标CSV/PNG路径统一解析为绝对路径（相对路径基于项目根目录）。
+
+2. 增强调试日志
+- 新增导出生命周期日志：`[EXPORT][START]`、`[EXPORT][APPEND]`、`[EXPORT][STOP]`、`[EXPORT][CHART]`。
+- 能直接看到文件路径、已写行数、图表生成结果与失败原因。
+
+### 验证结果
+- 静态检查：`src/app_window.py` 无错误。
+- 回归测试：`python -m unittest tests/test_arterial_pipeline.py tests/test_regression_layering.py` 通过（24项）。
+
+### 影响范围
+- 仅影响指标导出路径解析与调试可观测性。
+- 不影响训练、推理、数据接收与主CSV保存。
+
+## 2026-03-17 勾选导出但未生成CSV/PNG（未点击保存按钮）排查记录
+
+### 现象
+- 已勾选CSV/PNG导出，但运行后仍无导出文件。
+- 关闭或断开时日志显示：`[EXPORT][STOP] csv=None rows=0 fields=[] chart_enabled=True`。
+
+### 复现条件
+- 连接并接收数据，但未点击“开始保存”按钮。
+- 在机器学习中心勾选指标导出与PNG导出。
+
+### 分析过程
+1. 从日志判定会话状态
+- 有 `STOP` 无 `START`，说明导出会话从未建立。
+
+2. 回看启动条件
+- 原逻辑把导出会话启动绑定在“开始保存”流程，未点保存时不会创建导出文件句柄。
+
+### 根因结论
+- 根因：指标导出会话错误依赖主数据保存按钮，导致用户以为“勾选即导出”但实际上未启动。
+
+### 修复方案
+1. 导出会话与保存按钮解耦
+- 在 `update_data` 中增加运行时同步：连接中且勾选导出时自动启动会话。
+
+2. 断开连接自动收尾
+- 在断开流程中显式调用 `_stop_metrics_export()`，确保CSV/PNG即时落盘。
+
+### 验证结果
+- 静态检查：`src/app_window.py`、`src/core/connection_flow_mixin.py` 无错误。
+- 回归测试：`python -m unittest tests/test_arterial_pipeline.py tests/test_regression_layering.py` 通过（24项）。
+
+### 影响范围
+- 影响机器学习中心指标导出触发策略。
+- 不影响主CSV保存、连接状态机与数据接收路径。
+
+## 2026-03-17 指标导出体验问题（路径显示不一致 / PNG缺失 / 日志噪声）排查记录
+
+### 现象
+- 手动选择了导出路径，但底部标签仍显示默认路径。
+- 只导出了CSV，未看到PNG。
+- 控制台被 FSM/UI_DEBUG 日志淹没，难以观察 Export 关键日志。
+
+### 根因结论
+- 根因A：导出会话已启动后修改路径，旧会话未重启，标签与实际路径脱节。
+- 根因B：在无有效数值样本时，PNG逻辑直接跳过，用户体感为“没导出”。
+- 根因C：FSM/UI调试默认开启，掩盖了Export关键信息。
+
+### 修复方案
+1. 路径变更即时生效
+- CSV路径编辑后若会话在运行，立即重启导出会话并切换到新路径。
+- 未运行但已启用导出时，标签先显示解析后的目标绝对路径。
+
+2. PNG必有产物
+- 无有效数值趋势时，生成带原因说明的占位PNG，避免“只有CSV无PNG”。
+
+3. 日志降噪
+- FSM/UI_DEBUG 默认关闭（可通过 `PYTHONLOG_FSM_DEBUG=1` 打开）。
+- Export日志独立保留输出。
+
+### 验证结果
+- 静态检查：`src/app_window.py` 无错误。
+- 回归测试：`python -m unittest tests/test_arterial_pipeline.py tests/test_regression_layering.py` 通过（24项）。
+
+### 影响范围
+- 仅影响机器学习中心导出交互与日志体验。
+- 不影响采集链路、协议解析、训练与推理。
+
 ⚠️ 不足
 
 数据处理逻辑散落在 main.py 中
