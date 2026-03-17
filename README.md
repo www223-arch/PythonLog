@@ -8,6 +8,24 @@
 - 开发与架构文档请查看 [README_DEV.md](README_DEV.md)。
 - 详细开发指南请查看 [docs/developer_guide.md](docs/developer_guide.md)。
 
+## 近期架构更新（2026-03）
+
+- 入口文件 `src/main.py` 已收敛为薄入口，仅负责启动主窗口。
+- 主窗口主实现位于 `src/app_window.py`，用于 UI 组装与运行时编排。
+- `src/core/` 新增并稳定使用以下职责模块：
+	- `dock_topmost_mixin.py`：浮动页置顶与窗口层级管理。
+	- `dock_layout_mixin.py`：Dock 布局、工具栏、事件联动。
+	- `connection_flow_mixin.py`：连接/断开流程与配置编排。
+	- `raw_data_mixin.py`：原始数据区、发送区与缓冲刷新。
+	- `channel_menu_mixin.py`：通道右键菜单、改色与重命名。
+	- `receive_thread.py`、`widgets.py`：接收线程与通用 UI 组件。
+- 状态机已完成“状态逻辑/表现层”解耦：
+	- `src/core/connection_fsm.py` 通过 `StateViewModel` 输出状态视图。
+	- 主窗口通过 `apply_fsm_view` 统一渲染按钮闪烁与状态文本。
+- 数据源实例化已从连接编排中下沉：
+	- 新增 `src/core/data_source_factory.py`。
+	- `connection_flow_mixin.py` 仅保留 UI 配置校验与流程控制。
+
 ## 功能总览
 
 ### 数据源
@@ -357,6 +375,15 @@ dist\Python上位机.exe
 Pythonlog/
 |-- src/
 |   |-- main.py
+|   |-- app_window.py
+|   |-- core/
+|   |   |-- connection_fsm.py
+|   |   |-- connection_flow_mixin.py
+|   |   |-- raw_data_mixin.py
+|   |   |-- channel_menu_mixin.py
+|   |   |-- dock_layout_mixin.py
+|   |   |-- dock_topmost_mixin.py
+|   |   `-- data_source_factory.py
 |   |-- data_sources/
 |   |-- visualization/
 |-- tools/
