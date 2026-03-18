@@ -542,7 +542,8 @@ QDockWidget::float-button {
         training_group = QGroupBox("离线训练配置")
         training_layout = QFormLayout()
 
-        self.train_dataset_edit = QLineEdit("data/arterial_train_dataset.csv")
+        default_train_dataset = "" if getattr(sys, 'frozen', False) else "data/arterial_train_dataset.csv"
+        self.train_dataset_edit = QLineEdit(default_train_dataset)
         self.train_dataset_edit.setPlaceholderText("训练数据CSV路径")
         self.train_dataset_browse_btn = QPushButton("浏览...")
         self.train_dataset_browse_btn.clicked.connect(self.browse_train_dataset)
@@ -574,7 +575,8 @@ QDockWidget::float-button {
         self.train_extra_args_edit = QLineEdit("")
         self.train_extra_args_edit.setPlaceholderText("可选高级参数: --rf-n-estimators 320 --rf-max-depth 12")
 
-        self.train_output_edit = QLineEdit("data/models/arterial_model.joblib")
+        default_model_output = "data/models/arterial_model.joblib"
+        self.train_output_edit = QLineEdit(default_model_output)
         self.train_output_edit.setPlaceholderText("训练输出模型路径")
         self.train_output_browse_btn = QPushButton("浏览...")
         self.train_output_browse_btn.clicked.connect(self.browse_train_output)
@@ -689,6 +691,11 @@ QDockWidget::float-button {
         self.metrics_export_fields = []
         self.metrics_export_rows = []
         self.last_metrics_export_summary = "指标导出文件: 未启用"
+        self.pressure_ui_min_interval_ms = 80
+        self.last_pressure_ui_update_ms = 0
+        self.analysis_submit_interval_ms = 40
+        self.analysis_backlog_interval_ms = 120
+        self.last_analysis_submit_ms = 0
         self.data_count = 0
         self.auto_save_enabled = False
         self.last_data_time = None  # 记录最后接收数据的时间
@@ -723,6 +730,8 @@ QDockWidget::float-button {
         self.last_perf_recv_count = 0
         self.last_perf_proc_count = 0
         self.last_perf_drop_count = 0
+        self.ui_trim_drop_total = 0
+        self.last_perf_ui_trim_drop = 0
         self.last_perf_bytes_count = 0
         self.last_perf_parsed_frames = 0
         self.last_perf_parse_ns_total = 0
@@ -814,6 +823,7 @@ QDockWidget::float-button {
         recv_rate = int((recv_count - self.last_perf_recv_count) / dt)
         proc_rate = int((proc_count - self.last_perf_proc_count) / dt)
         drop_delta = max(0, drop_count - self.last_perf_drop_count)
+        ui_trim_delta = max(0, self.ui_trim_drop_total - self.last_perf_ui_trim_drop)
         queue_size = self.data_queue.qsize()
 
         bytes_rate = int((bytes_count - self.last_perf_bytes_count) / dt)
@@ -822,12 +832,13 @@ QDockWidget::float-button {
         avg_parse_us = int((parse_ns_delta / parsed_delta) / 1000) if parsed_delta > 0 else 0
 
         self.perf_label.setText(
-            f"速率: 接收 {recv_rate}/s | 处理 {proc_rate}/s | 队列 {queue_size} | 丢包+{drop_delta} | 字节 {bytes_rate} B/s | 解析 {avg_parse_us} us/帧"
+            f"速率: 接收 {recv_rate}/s | 处理 {proc_rate}/s | 队列 {queue_size} | 丢包+{drop_delta} | 追帧丢弃+{ui_trim_delta} | 字节 {bytes_rate} B/s | 解析 {avg_parse_us} us/帧"
         )
 
         self.last_perf_recv_count = recv_count
         self.last_perf_proc_count = proc_count
         self.last_perf_drop_count = drop_count
+        self.last_perf_ui_trim_drop = self.ui_trim_drop_total
         self.last_perf_bytes_count = bytes_count
         self.last_perf_parsed_frames = parsed_frames
         self.last_perf_parse_ns_total = parse_ns_total
@@ -963,12 +974,15 @@ QDockWidget::float-button {
         metrics = result.get('metrics', {}) or {}
         prediction = result.get('prediction', {}) or {}
 
-        self.waveform_widget.update_pressure_matrix(
-            matrix,
-            result.get('timestamp', 0.0),
-            metrics,
-            prediction,
-        )
+        now_ms = QDateTime.currentMSecsSinceEpoch()
+        if now_ms - self.last_pressure_ui_update_ms >= self.pressure_ui_min_interval_ms:
+            self.waveform_widget.update_pressure_matrix(
+                matrix,
+                result.get('timestamp', 0.0),
+                metrics,
+                prediction,
+            )
+            self.last_pressure_ui_update_ms = now_ms
 
         if metrics:
             bpm = float(metrics.get('bpm', 0.0))
@@ -1444,9 +1458,29 @@ QDockWidget::float-button {
             }
 
     def on_metric_export_chart_toggled(self, checked: bool):
-        """勾选PNG导出时自动开启CSV导出，避免配置矛盾。"""
+        """勾选PNG导出时自动开启CSV导出，并给出路径与时机提示。"""
         if checked and not self.metric_export_enable_checkbox.isChecked():
             self.metric_export_enable_checkbox.setChecked(True)
+
+        csv_target = self._resolve_metric_export_file_path()
+        chart_target = self._resolve_metric_chart_output_path(csv_target)
+
+        if checked:
+            self.metric_export_file_label.setText(
+                f"指标导出文件: {csv_target}\n图表导出文件: {chart_target}"
+            )
+            if self.data_source_manager.is_connected():
+                self._ensure_metrics_export_runtime(silent=False)
+            QMessageBox.information(
+                self,
+                "趋势图导出",
+                f"已启用PNG趋势图导出。\nCSV: {csv_target}\nPNG: {chart_target}\n\n提示: PNG会在停止保存或断开连接时生成。",
+            )
+        else:
+            if self.metric_export_enable_checkbox.isChecked():
+                self.metric_export_file_label.setText(f"指标导出文件: {csv_target}")
+            else:
+                self.metric_export_file_label.setText("指标导出文件: 未启用")
 
     def on_metric_export_path_changed(self, _: str):
         """导出路径修改后，若会话已运行则立即切换到新路径。"""
@@ -1460,14 +1494,29 @@ QDockWidget::float-button {
 
     def on_metric_chart_path_changed(self, _: str):
         """图表路径修改提示。"""
-        if self.metric_export_chart_checkbox.isChecked() and self.metric_export_enable_checkbox.isChecked():
-            target = self._resolve_metric_chart_output_path(self._resolve_metric_export_file_path())
-            self.metric_export_file_label.setText(f"指标导出文件: {self._resolve_metric_export_file_path()}\n图表导出文件: {target}")
+        if self.metric_export_chart_checkbox.isChecked():
+            csv_target = self._resolve_metric_export_file_path()
+            target = self._resolve_metric_chart_output_path(csv_target)
+            self.metric_export_file_label.setText(f"指标导出文件: {csv_target}\n图表导出文件: {target}")
 
     def on_metric_export_enabled_changed(self, checked: bool):
         """保存过程中允许动态启停指标导出。"""
+        if checked:
+            csv_target = self._resolve_metric_export_file_path()
+            if self.metric_export_chart_checkbox.isChecked():
+                chart_target = self._resolve_metric_chart_output_path(csv_target)
+                self.metric_export_file_label.setText(f"指标导出文件: {csv_target}\n图表导出文件: {chart_target}")
+            else:
+                self.metric_export_file_label.setText(f"指标导出文件: {csv_target}")
+        
         if not self.data_source_manager.is_connected():
-            if not checked:
+            if checked:
+                QMessageBox.information(
+                    self,
+                    "指标导出",
+                    "已启用CSV导出。\n当前未连接数据源，连接并开始保存后将自动写入。",
+                )
+            else:
                 self.last_metrics_export_summary = "指标导出文件: 未启用"
                 self.metric_export_file_label.setText(self.last_metrics_export_summary)
             return
@@ -1475,7 +1524,12 @@ QDockWidget::float-button {
         if checked:
             start_result = self._start_metrics_export_if_needed()
             if start_result.get('started'):
-                QMessageBox.information(self, "指标导出", f"已启用指标导出:\n{start_result.get('csv_path')}")
+                csv_path = str(start_result.get('csv_path') or '')
+                if self.metric_export_chart_checkbox.isChecked():
+                    chart_target = self._resolve_metric_chart_output_path(csv_path)
+                    QMessageBox.information(self, "指标导出", f"已启用指标导出:\nCSV: {csv_path}\nPNG: {chart_target}")
+                else:
+                    QMessageBox.information(self, "指标导出", f"已启用CSV导出:\n{csv_path}")
             else:
                 QMessageBox.warning(self, "指标导出", str(start_result.get('reason') or '启动失败'))
         else:
@@ -1790,20 +1844,70 @@ QDockWidget::float-button {
         if file_path:
             self.train_output_edit.setText(file_path)
 
+    def _resolve_path_from_ui(self, ui_path: str) -> str:
+        raw = str(ui_path or "").strip()
+        if not raw:
+            return ""
+
+        if os.path.isabs(raw):
+            return os.path.abspath(raw)
+
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        return os.path.abspath(os.path.join(project_root, raw))
+
+    def _resolve_training_launcher(self):
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        default_script = os.path.join(project_root, "tools", "train_arterial_model.py")
+
+        if getattr(sys, 'frozen', False):
+            # 打包版优先走内置训练服务，避免sys.executable自启动上位机窗口。
+            return ["__internal_training__"], project_root, ""
+
+        if not getattr(sys, 'frozen', False):
+            if not os.path.isfile(default_script):
+                return None, None, "训练脚本不存在，请检查 tools/train_arterial_model.py。"
+            return [sys.executable, default_script], project_root, ""
+
+        return None, None, "训练环境不可用。"
+
     def train_model_from_ui(self):
         """在上位机中触发训练脚本，完成后自动加载模型。"""
         if self.train_model_busy:
             QMessageBox.information(self, "训练任务", "训练任务正在执行，请稍候。")
             return
 
-        dataset_path = self.train_dataset_edit.text().strip()
-        model_output = self.train_output_edit.text().strip()
+        dataset_path = self._resolve_path_from_ui(self.train_dataset_edit.text())
+        model_output = self._resolve_path_from_ui(self.train_output_edit.text())
         if not dataset_path:
             QMessageBox.warning(self, "训练任务", "请先选择训练数据CSV。")
             return
         if not model_output:
             QMessageBox.warning(self, "训练任务", "请先设置模型输出路径。")
             return
+
+        if not os.path.isfile(dataset_path):
+            QMessageBox.warning(self, "训练任务", f"训练数据不存在:\n{dataset_path}")
+            return
+        if os.path.splitext(dataset_path)[1].lower() != ".csv":
+            QMessageBox.warning(self, "训练任务", "训练数据必须是CSV文件。")
+            return
+
+        model_dir = os.path.dirname(model_output)
+        try:
+            if model_dir:
+                os.makedirs(model_dir, exist_ok=True)
+        except OSError as e:
+            QMessageBox.warning(self, "训练任务", f"模型输出目录不可用:\n{model_dir}\n错误: {e}")
+            return
+
+        train_launcher, train_cwd, train_error = self._resolve_training_launcher()
+        if train_launcher is None:
+            QMessageBox.warning(self, "训练任务", train_error or "训练环境不可用。")
+            return
+
+        # 将解析后的绝对路径回填到UI，避免用户误判默认相对路径。
+        self.train_dataset_edit.setText(dataset_path)
+        self.train_output_edit.setText(model_output)
 
         test_size_text = self.train_test_size_edit.text().strip() or "0.2"
         seed_text = self.train_seed_edit.text().strip() or "42"
@@ -1839,21 +1943,17 @@ QDockWidget::float-button {
 
         worker = threading.Thread(
             target=self._train_model_worker,
-            args=(dataset_path, model_output, model_arg, test_size, seed, extra_args),
+            args=(train_launcher, train_cwd, dataset_path, model_output, model_arg, test_size, seed, extra_args),
             daemon=True,
         )
         worker.start()
 
-    def _train_model_worker(self, dataset_path: str, model_output: str, model_arg: str, test_size: float, seed: int, extra_args):
+    def _train_model_worker(self, train_launcher, train_cwd: str, dataset_path: str, model_output: str, model_arg: str, test_size: float, seed: int, extra_args):
         """后台执行训练脚本，完成后切回主线程更新UI。"""
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        script_path = os.path.join(project_root, "tools", "train_arterial_model.py")
         base_name, _ = os.path.splitext(model_output)
         meta_output = f"{base_name}_meta.json"
 
-        cmd = [
-            sys.executable,
-            script_path,
+        cmd = list(train_launcher) + [
             "--input",
             dataset_path,
             "--model-output",
@@ -1871,21 +1971,35 @@ QDockWidget::float-button {
             cmd.extend(extra_args)
 
         try:
-            proc = subprocess.run(
-                cmd,
-                cwd=project_root,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                check=False,
-            )
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
-            success = proc.returncode == 0
+            if train_launcher and train_launcher[0] == "__internal_training__":
+                from analytics.ml.training_service import build_arg_parser, run_training
+
+                parser = build_arg_parser()
+                args = parser.parse_args(cmd[1:])
+                result = run_training(args)
+                stdout = str(result.get("stdout", ""))
+                stderr = ""
+                success = True
+            else:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=train_cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
+                stdout = proc.stdout or ""
+                stderr = proc.stderr or ""
+                success = proc.returncode == 0
         except subprocess.TimeoutExpired:
             success = False
             stdout = ""
             stderr = "训练超时（300秒），已终止。可先减小数据量或改用更快模型（如logreg/rf）。"
+        except SystemExit as e:
+            success = False
+            stdout = ""
+            stderr = f"训练参数错误: {e}"
         except Exception as e:
             success = False
             stdout = ""
@@ -2088,13 +2202,42 @@ QDockWidget::float-button {
         # 指标导出与“开始保存”按钮解耦：连接中且勾选导出时自动启动。
         self._ensure_metrics_export_runtime(silent=True)
 
-        # 每轮最多处理固定批次，降低计时和函数调用开销
-        max_batch_per_update = 500
+        queue_size_start = self.data_queue.qsize()
+
+        # 低延迟优先：队列积压时主动追帧，必要时丢弃最旧数据。
+        if queue_size_start > 3200:
+            trim_target = 900
+            trim_count = max(0, queue_size_start - trim_target)
+            trimmed = 0
+            while trimmed < trim_count:
+                try:
+                    self.data_queue.get_nowait()
+                    trimmed += 1
+                except queue.Empty:
+                    break
+            self.ui_trim_drop_total += trimmed
+            queue_size_start = self.data_queue.qsize()
+
+        # 每轮处理上限 + 时间预算，队列高水位时自适应加大消费能力。
+        if queue_size_start > 1600:
+            max_batch_per_update = 1200
+            update_budget_s = 0.030
+        elif queue_size_start > 600:
+            max_batch_per_update = 700
+            update_budget_s = 0.020
+        else:
+            max_batch_per_update = 320
+            update_budget_s = 0.012
+
+        loop_start = time.perf_counter()
         processed_count = 0
         has_valid_data = False
         has_format_error = False
+        latest_packet_for_analysis = None
 
         while processed_count < max_batch_per_update:
+            if processed_count > 0 and (time.perf_counter() - loop_start) >= update_budget_s:
+                break
             
             try:
                 # 从队列中取出数据
@@ -2113,7 +2256,7 @@ QDockWidget::float-button {
                 self.last_data_time = QDateTime.currentMSecsSinceEpoch()
 
                 self._update_waveform_from_packet(data_dict)
-                self._submit_arterial_analysis(data_dict)
+                latest_packet_for_analysis = data_dict
                 
                 processed_count += 1
             except queue.Empty:
@@ -2122,6 +2265,15 @@ QDockWidget::float-button {
             except Exception as e:
                 self.log_print(f"[MainWindow] 处理数据失败: {e}")
                 break
+
+        # 分析链路采用“当前轮最新帧”策略：减轻CPU压力，优先降低端到端延迟。
+        if latest_packet_for_analysis is not None:
+            now_ms = QDateTime.currentMSecsSinceEpoch()
+            backlog_size = self.data_queue.qsize()
+            interval_ms = self.analysis_backlog_interval_ms if backlog_size > 300 else self.analysis_submit_interval_ms
+            if now_ms - self.last_analysis_submit_ms >= interval_ms:
+                self._submit_arterial_analysis(latest_packet_for_analysis)
+                self.last_analysis_submit_ms = now_ms
 
         # 批量处理后再触发状态机，避免每点一次状态切换开销
         # 对格式错误事件优先上报，确保UI能及时进入红色闪烁状态。

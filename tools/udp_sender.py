@@ -250,7 +250,7 @@ def main():
     #192.168.114.238
     #127.0.0.1
     parser = argparse.ArgumentParser(description='UDP数据发送工具')
-    parser.add_argument('--host', type=str, default='127.0.0.1', 
+    parser.add_argument('--host', type=str, default='127.0.0.1', #192.168.114.238
                        help='目标主机地址 (默认: 127.0.0.1)')
     parser.add_argument('--port', type=int, default=8888, 
                        help='目标端口 (默认: 8888)')
