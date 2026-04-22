@@ -7,6 +7,7 @@
 - 本文档面向使用者，关注安装、配置和操作。
 - 开发与架构文档请查看 [README_DEV.md](README_DEV.md)。
 - 详细开发指南请查看 [docs/developer_guide.md](docs/developer_guide.md)。
+- C/C++开发者进化手册请查看 [docs/cpp_to_python_evolution_manual.md](docs/cpp_to_python_evolution_manual.md)。
 - 热力图/机器学习模块开发指南请查看 [docs/heatmap_ml_module_guide.md](docs/heatmap_ml_module_guide.md)。
 
 ## 近期架构更新（2026-03）

@@ -5,6 +5,7 @@
 配套扩展文档：
 
 - 热力图/机器学习模块开发指南：[docs/heatmap_ml_module_guide.md](docs/heatmap_ml_module_guide.md)
+- C/C++开发者进化手册（项目实战版）：[docs/cpp_to_python_evolution_manual.md](docs/cpp_to_python_evolution_manual.md)
 
 ## 1. 项目定位与目标
 
