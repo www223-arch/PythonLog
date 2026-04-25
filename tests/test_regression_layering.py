@@ -76,6 +76,12 @@ class SendCapableSource(DataSource):
 
 
 class ManagerLayeringRegressionTests(unittest.TestCase):
+    def test_udp_default_buffer_is_large_enough_for_matrix_frames(self):
+        from src.data_sources.manager import create_udp_source
+
+        src = create_udp_source('0.0.0.0', 8888)
+        self.assertGreaterEqual(getattr(src, 'buffer_size', 0), 65535)
+
     def test_tcp_factory_returns_tcp_source(self):
         src = create_tcp_source('0.0.0.0', 9999)
         self.assertIsInstance(src, TCPDataSource)

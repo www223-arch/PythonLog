@@ -19,11 +19,17 @@ class ConnectionFlowMixin:
         """连接编排层：统一处理断开流程（不改业务语义）"""
         self._debug_ui_state_snapshot("before_disconnect_flow", event="disconnect")
         self._snapshot_justfloat_channel_names_before_disconnect()
+        if hasattr(self, 'arterial_pipeline') and self.arterial_pipeline is not None:
+            self.arterial_pipeline.reset()
+        if hasattr(self, '_reset_arterial_ui_state'):
+            self._reset_arterial_ui_state()
         # 断开时重置暂停状态，避免下次连接仍停在暂停显示
         self.waveform_widget.is_paused = False
         self.pause_btn.setText("暂停")
         # 先停止数据接收线程，避免访问已断开的数据源
         self.stop_receive_thread()
+        if hasattr(self, '_stop_metrics_export'):
+            self._stop_metrics_export()
         # 再断开数据源连接
         self.data_source_manager.disconnect()
         self.status_label.setText("未连接")
@@ -237,6 +243,10 @@ class ConnectionFlowMixin:
 
             if success:
                 self.log_print(success_log)
+                if hasattr(self, 'arterial_pipeline') and self.arterial_pipeline is not None:
+                    self.arterial_pipeline.reset()
+                if hasattr(self, '_reset_arterial_ui_state'):
+                    self._reset_arterial_ui_state()
                 self.status_label.setText("已连接")
                 self.status_label.setStyleSheet("color: green;")
                 # 每次连接都恢复为“继续接收显示”状态

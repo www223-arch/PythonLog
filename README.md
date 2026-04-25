@@ -7,6 +7,8 @@
 - 本文档面向使用者，关注安装、配置和操作。
 - 开发与架构文档请查看 [README_DEV.md](README_DEV.md)。
 - 详细开发指南请查看 [docs/developer_guide.md](docs/developer_guide.md)。
+- C/C++开发者进化手册请查看 [docs/cpp_to_python_evolution_manual.md](docs/cpp_to_python_evolution_manual.md)。
+- 热力图/机器学习模块开发指南请查看 [docs/heatmap_ml_module_guide.md](docs/heatmap_ml_module_guide.md)。
 
 ## 近期架构更新（2026-03）
 
@@ -220,6 +222,59 @@ python tools/generate_test_files.py --format bin --rate 100 --type sine --with-t
 - 文件模式采用实时尾随读取（tail）策略。
 - 当 `.log/.bin` 文件有新增数据时，上位机会继续解析并实时显示/打印。
 - 可配合 `udp_sender.py` 或 `tcp_sender.py` 的 `--dump-log` 参数做在线联调。
+
+### 5. 动脉压力二维平面联调与机器学习训练
+
+#### 5.1 实时发送点阵压力（UDP/TCP）
+
+```bash
+# 查看帮助
+python tools/pressure_matrix_sender.py --help
+
+# UDP发送 16x16 点阵（默认目标127.0.0.1:8888）
+python tools/pressure_matrix_sender.py --mode udp --grid-width 16 --grid-height 16 --rate 30 --duration 30
+
+# TCP发送 16x16 点阵（先在上位机选TCP监听）
+python tools/pressure_matrix_sender.py --mode tcp --host 127.0.0.1 --port 9999 --grid-width 16 --grid-height 16 --rate 30 --duration 30
+
+# 边发边落盘（用于复盘）
+python tools/pressure_matrix_sender.py --mode udp --duration 20 --dump-log data/live_pressure.log
+```
+
+上位机操作：
+
+- 控制面板勾选“启用分析”。
+- 设置点阵宽高与发送端一致（如16x16）。
+- 点击“应用分析配置”。
+- 在“压力平面”页签查看二维压力分布动画与评估信息。
+
+#### 5.2 生成训练数据并训练模型
+
+```bash
+# 生成训练数据（CSV）
+python tools/generate_arterial_dataset.py --output data/arterial_train_dataset.csv --samples 1500 --grid-width 16 --grid-height 16
+
+# 训练随机森林模型并导出
+python tools/train_arterial_model.py --input data/arterial_train_dataset.csv --model-type rf --model-output data/models/arterial_rf.joblib --meta-output data/models/arterial_rf_meta.json
+
+# 训练逻辑回归
+python tools/train_arterial_model.py --input data/arterial_train_dataset.csv --model-type logreg --model-output data/models/arterial_logreg.joblib --meta-output data/models/arterial_logreg_meta.json
+
+# 训练支持向量机
+python tools/train_arterial_model.py --input data/arterial_train_dataset.csv --model-type svm --model-output data/models/arterial_svm.joblib --meta-output data/models/arterial_svm_meta.json
+
+# 训练梯度提升树
+python tools/train_arterial_model.py --input data/arterial_train_dataset.csv --model-type gbdt --model-output data/models/arterial_gbdt.joblib --meta-output data/models/arterial_gbdt_meta.json
+```
+
+模型使用：
+
+- 在上位机“机器学习中心 -> 在线推理配置”中选择模型类型（自动/规则/随机森林/逻辑回归/SVM/梯度提升树）。
+- 填写模型路径（`.joblib`）并点击“应用推理配置”。
+- 运行数据流后将自动切换到外部模型推理（若加载失败或类型不匹配会自动降级规则模式）。
+- 也可在“机器学习中心 -> 离线训练配置”里直接选择数据集、训练算法并点击“开始训练并加载”。
+- 训练参数可在 UI 中直接设置：`test_size`、`seed`，以及“高级参数”（例如 `--rf-n-estimators 320 --rf-max-depth 12`）。
+- 指标导出支持“下拉多选勾选导出项”，并可手动指定导出 CSV 文件路径（留空则自动命名）。
 
 ## 界面使用
 

@@ -227,10 +227,51 @@ class WaveformWidget(QWidget):
         freq_layout.addWidget(self.freq_plot_widget)
         
         self.freq_tab.setLayout(freq_layout)
+
+        # 压力平面选项卡
+        self.pressure_tab = QWidget()
+        pressure_layout = QVBoxLayout()
+
+        self.pressure_info_label = QLabel("压力平面: 等待数据")
+        self.pressure_info_label.setFont(QFont("Arial", 9))
+        self.pressure_info_label.setStyleSheet("color: #666;")
+        self.pressure_info_label.setWordWrap(True)
+
+        self.pressure_plot_widget = pg.PlotWidget()
+        self.pressure_plot_widget.setBackground('w')
+        self.pressure_plot_widget.setLabel('left', '行')
+        self.pressure_plot_widget.setLabel('bottom', '列')
+        self.pressure_plot_widget.showGrid(x=True, y=True, alpha=0.2)
+        self.pressure_plot_widget.getPlotItem().setAspectLocked(True)
+        self.pressure_plot_widget.getPlotItem().invertY(True)
+
+        self.pressure_image_item = pg.ImageItem()
+        self.pressure_plot_widget.addItem(self.pressure_image_item)
+
+        # 使用稳定色表，便于观察波动趋势
+        pressure_cmap = pg.ColorMap(
+            pos=np.array([0.0, 0.25, 0.5, 0.75, 1.0]),
+            color=np.array([
+                [59, 76, 192, 255],
+                [68, 146, 231, 255],
+                [255, 255, 191, 255],
+                [253, 174, 97, 255],
+                [180, 4, 38, 255],
+            ], dtype=np.ubyte),
+        )
+        self.pressure_lut = pressure_cmap.getLookupTable(0.0, 1.0, 256)
+        self.pressure_image_item.setLookupTable(self.pressure_lut)
+        self.pressure_level_min = None
+        self.pressure_level_max = None
+
+        pressure_layout.addWidget(self.pressure_info_label)
+        pressure_layout.addWidget(self.pressure_plot_widget)
+        self.pressure_tab.setLayout(pressure_layout)
         
         # 添加选项卡
         self.tab_widget.addTab(self.time_tab, "时域")
         self.tab_widget.addTab(self.freq_tab, "频域")
+        self.tab_widget.addTab(self.pressure_tab, "压力平面")
         
         layout.addWidget(self.tab_widget)
         
@@ -464,8 +505,66 @@ class WaveformWidget(QWidget):
         self.freq_peaks.clear()
         self.freq_user_markers.clear()
         self.freq_info_label.setText("请选择通道并点击'分析'按钮")
+        self.clear_pressure_view()
         
         print("所有数据已清空")
+
+    def clear_pressure_view(self) -> None:
+        """清空压力平面显示。"""
+        self.pressure_plot_widget.clear()
+        self.pressure_image_item = pg.ImageItem()
+        self.pressure_image_item.setLookupTable(self.pressure_lut)
+        self.pressure_plot_widget.addItem(self.pressure_image_item)
+        self.pressure_level_min = None
+        self.pressure_level_max = None
+        self.pressure_info_label.setText("压力平面: 等待数据")
+
+    def update_pressure_matrix(self, matrix, timestamp: float = 0.0, metrics=None, prediction=None) -> None:
+        """更新二维压力平面。"""
+        if matrix is None:
+            return
+
+        arr = np.asarray(matrix, dtype=np.float32)
+        if arr.ndim != 2 or arr.size == 0:
+            return
+
+        valid = arr[~np.isnan(arr)]
+        if valid.size == 0:
+            return
+
+        low = float(np.percentile(valid, 5))
+        high = float(np.percentile(valid, 95))
+        if high <= low:
+            high = low + 1e-3
+
+        # 慢更新量程，减少帧间闪烁
+        if self.pressure_level_min is None or self.pressure_level_max is None:
+            self.pressure_level_min = low
+            self.pressure_level_max = high
+        else:
+            alpha = 0.12
+            self.pressure_level_min = (1.0 - alpha) * self.pressure_level_min + alpha * low
+            self.pressure_level_max = (1.0 - alpha) * self.pressure_level_max + alpha * high
+            if self.pressure_level_max <= self.pressure_level_min:
+                self.pressure_level_max = self.pressure_level_min + 1e-3
+
+        draw_arr = np.nan_to_num(arr, nan=self.pressure_level_min)
+        self.pressure_image_item.setImage(draw_arr, autoLevels=False)
+        self.pressure_image_item.setLevels((self.pressure_level_min, self.pressure_level_max))
+
+        h, w = draw_arr.shape
+        self.pressure_plot_widget.setXRange(0, max(1, w), padding=0)
+        self.pressure_plot_widget.setYRange(0, max(1, h), padding=0)
+
+        bpm = float((metrics or {}).get('bpm', 0.0))
+        consistency = float((metrics or {}).get('consistency', 0.0))
+        repeatability = float((metrics or {}).get('repeatability', 0.0))
+        label = str((prediction or {}).get('label', 'unknown'))
+        score = float((prediction or {}).get('score', 0.0))
+
+        self.pressure_info_label.setText(
+            f"压力平面: t={timestamp:.1f} ms | 尺寸={h}x{w} | bpm={bpm:.1f} | 一致性={consistency:.2f} | 重复性={repeatability:.2f} | 评估={label}({score:.2f})"
+        )
 
     def _estimate_sample_rate_from_x_data(self, x_data: List[float]) -> float:
         """根据时间戳估算采样率（Hz）。
