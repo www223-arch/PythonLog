@@ -268,10 +268,65 @@ class WaveformWidget(QWidget):
         pressure_layout.addWidget(self.pressure_plot_widget)
         self.pressure_tab.setLayout(pressure_layout)
         
+        # 波特图选项卡
+        self.bode_tab = QWidget()
+        bode_layout = QVBoxLayout()
+        
+        # 波特图控制面板
+        bode_control_layout = QHBoxLayout()
+        
+        bode_label = QLabel("波特图通道选择:")
+        bode_label.setFont(QFont("Arial", 10, QFont.Bold))
+        
+        self.input_channel_combo = QComboBox()
+        self.input_channel_combo.setMinimumWidth(100)
+        self.input_channel_combo.setToolTip("选择输入通道")
+        
+        self.output_channel_combo = QComboBox()
+        self.output_channel_combo.setMinimumWidth(100)
+        self.output_channel_combo.setToolTip("选择输出通道")
+        
+        self.bode_btn = QPushButton("分析")
+        self.bode_btn.clicked.connect(self.perform_bode_analysis)
+        self.bode_btn.setMaximumWidth(80)
+        
+        bode_control_layout.addWidget(bode_label)
+        bode_control_layout.addWidget(QLabel("输入:"))
+        bode_control_layout.addWidget(self.input_channel_combo)
+        bode_control_layout.addWidget(QLabel("输出:"))
+        bode_control_layout.addWidget(self.output_channel_combo)
+        bode_control_layout.addWidget(self.bode_btn)
+        bode_control_layout.addStretch()
+        
+        # 波特图绘图组件
+        self.bode_plot_widget = pg.PlotWidget()
+        self.bode_plot_widget.setBackground('w')
+        self.bode_plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self.bode_plot_widget.setLabel('left', '幅值 (dB) / 相位 (度)')
+        self.bode_plot_widget.setLabel('bottom', '频率 (Hz)')
+        self.bode_plot_widget.setTitle('波特图分析')
+        self.bode_plot_widget.setLogMode(x=True, y=False)
+        
+        # 波特图信息标签
+        self.bode_info_label = QLabel("请选择输入和输出通道并点击'分析'按钮")
+        self.bode_info_label.setFont(QFont("Arial", 9))
+        self.bode_info_label.setStyleSheet("color: #666;")
+        self.bode_info_label.setWordWrap(True)
+        
+        bode_layout.addLayout(bode_control_layout)
+        bode_layout.addWidget(self.bode_info_label)
+        bode_layout.addWidget(self.bode_plot_widget)
+        self.bode_tab.setLayout(bode_layout)
+        
+        # 波特图相关数据
+        self.bode_magnitude_curve = None
+        self.bode_phase_curve = None
+        
         # 添加选项卡
         self.tab_widget.addTab(self.time_tab, "时域")
         self.tab_widget.addTab(self.freq_tab, "频域")
         self.tab_widget.addTab(self.pressure_tab, "压力平面")
+        self.tab_widget.addTab(self.bode_tab, "波特图")
         
         layout.addWidget(self.tab_widget)
         
@@ -305,6 +360,15 @@ class WaveformWidget(QWidget):
         # 更新通道选择下拉框
         self.channel_combo.addItem(name)
         
+        # 更新波特图通道选择下拉框
+        self.input_channel_combo.addItem(name)
+        self.output_channel_combo.addItem(name)
+        
+        # 默认选择第一个通道作为输入和输出
+        if len(self.channels) == 1:
+            self.input_channel_combo.setCurrentText(name)
+            self.output_channel_combo.setCurrentText(name)
+        
         print(f"通道 {name} 已添加")
     
     def remove_channel(self, name: str) -> None:
@@ -321,6 +385,15 @@ class WaveformWidget(QWidget):
             index = self.channel_combo.findText(name)
             if index >= 0:
                 self.channel_combo.removeItem(index)
+            
+            # 从波特图通道选择下拉框中移除
+            input_index = self.input_channel_combo.findText(name)
+            if input_index >= 0:
+                self.input_channel_combo.removeItem(input_index)
+            
+            output_index = self.output_channel_combo.findText(name)
+            if output_index >= 0:
+                self.output_channel_combo.removeItem(output_index)
             
             print(f"通道 {name} 已移除")
     
@@ -494,6 +567,8 @@ class WaveformWidget(QWidget):
 
         self.channels.clear()
         self.channel_combo.clear()
+        self.input_channel_combo.clear()
+        self.output_channel_combo.clear()
         self.time_counter = 0
         self.clear_marked_points()  # 清空标记点
         
@@ -505,6 +580,13 @@ class WaveformWidget(QWidget):
         self.freq_peaks.clear()
         self.freq_user_markers.clear()
         self.freq_info_label.setText("请选择通道并点击'分析'按钮")
+        
+        # 清空波特图分析
+        self.bode_plot_widget.clear()
+        self.bode_magnitude_curve = None
+        self.bode_phase_curve = None
+        self.bode_info_label.setText("请选择输入和输出通道并点击'分析'按钮")
+        
         self.clear_pressure_view()
         
         print("所有数据已清空")
@@ -1422,3 +1504,87 @@ class WaveformWidget(QWidget):
         except Exception as e:
             self.freq_info_label.setText(f"显示全部频域分析失败: {str(e)}")
             print(f"显示全部频域分析失败: {e}")
+    
+    def perform_bode_analysis(self) -> None:
+        """执行波特图分析"""
+        input_channel_name = self.input_channel_combo.currentText()
+        output_channel_name = self.output_channel_combo.currentText()
+        
+        if not input_channel_name or not output_channel_name:
+            self.bode_info_label.setText("请选择输入和输出通道")
+            return
+        
+        if input_channel_name not in self.channels or output_channel_name not in self.channels:
+            self.bode_info_label.setText("所选通道不存在")
+            return
+        
+        input_channel = self.channels[input_channel_name]
+        output_channel = self.channels[output_channel_name]
+        
+        input_data = input_channel['data']
+        output_data = output_channel['data']
+        
+        if len(input_data) < 10 or len(output_data) < 10:
+            self.bode_info_label.setText("数据点太少，无法进行波特图分析")
+            return
+        
+        try:
+            # 获取采样率
+            x_data = input_channel['x_data'] if input_channel['x_data'] else output_channel['x_data']
+            actual_sample_rate = self._get_effective_sample_rate(x_data)
+            
+            # 确保输入和输出数据长度相同
+            min_length = min(len(input_data), len(output_data))
+            input_data = input_data[-min_length:]
+            output_data = output_data[-min_length:]
+            
+            # 执行FFT
+            n = min_length
+            input_fft = fft(input_data)
+            output_fft = fft(output_data)
+            fft_freq = fftfreq(n, d=1.0/actual_sample_rate)
+            
+            # 只取正频率部分
+            positive_freq_idx = fft_freq >= 0
+            freq = fft_freq[positive_freq_idx]
+            input_fft = input_fft[positive_freq_idx]
+            output_fft = output_fft[positive_freq_idx]
+            
+            # 计算频率响应（输出/输入）
+            # 避免除以零
+            epsilon = 1e-10
+            frequency_response = output_fft / (input_fft + epsilon)
+            
+            # 计算幅值响应（dB）
+            magnitude = 20 * np.log10(np.abs(frequency_response) + epsilon)
+            
+            # 计算相位响应（度）
+            phase = np.angle(frequency_response, deg=True)
+            
+            # 清除旧的波特图曲线
+            self.bode_plot_widget.clear()
+            
+            # 绘制幅值响应（蓝色）
+            magnitude_pen = pg.mkPen(color='b', width=2)
+            self.bode_magnitude_curve = self.bode_plot_widget.plot(freq, magnitude, pen=magnitude_pen, name='幅值 (dB)')
+            
+            # 绘制相位响应（红色）
+            phase_pen = pg.mkPen(color='r', width=2)
+            self.bode_phase_curve = self.bode_plot_widget.plot(freq, phase, pen=phase_pen, name='相位 (度)')
+            
+            # 添加图例
+            self.bode_plot_widget.addLegend()
+            
+            # 更新波特图信息
+            info_text = (f"输入通道: {input_channel_name}\n"
+                        f"输出通道: {output_channel_name}\n"
+                        f"数据点数: {n}\n"
+                        f"采样率: {actual_sample_rate:.1f} Hz\n"
+                        f"频率范围: 0 ~ {freq[-1]:.2f} Hz")
+            self.bode_info_label.setText(info_text)
+            
+            print(f"波特图分析完成: 输入={input_channel_name}, 输出={output_channel_name}")
+            
+        except Exception as e:
+            self.bode_info_label.setText(f"波特图分析失败: {str(e)}")
+            print(f"波特图分析失败: {e}")
