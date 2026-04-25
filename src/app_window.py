@@ -280,7 +280,7 @@ QDockWidget::float-button {
         ])
         self.baudrate_combo.setCurrentText("115200")
         self.protocol_combo = QComboBox()
-        self.protocol_combo.addItems(["文本协议", "Justfloat", "Rawdata"])
+        self.protocol_combo.addItems(["文本协议", "Justfloat", "Firewater", "Rawdata"])
         self.protocol_combo.setCurrentText("文本协议")
         self.protocol_combo.currentTextChanged.connect(self.on_protocol_changed)
         

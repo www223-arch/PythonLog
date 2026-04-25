@@ -115,6 +115,17 @@ class SerialDataSource(DataSource):
                     if self.parsed_frames:
                         return self.parsed_frames.popleft()
                     return None
+                elif self.protocol == 'firewater':
+                    # Firewater协议：文本格式，支持 samples:%f, %f 或 %f, %f 格式
+                    data = self.serial.read(self.serial.in_waiting)
+                    self.bytes_read_count += len(data)
+                    # 调用原始数据回调
+                    if self.raw_data_callback:
+                        self.raw_data_callback(data)
+                    self._parse_firewater_data(data)
+                    if self.parsed_frames:
+                        return self.parsed_frames.popleft()
+                    return None
                 else:  # rawdata
                     # Rawdata协议：原始数据，直接显示
                     data = self.serial.read(self.serial.in_waiting)
@@ -336,6 +347,92 @@ class SerialDataSource(DataSource):
             import time
             return ('FORMAT_ERROR', time.time())
     
+    def _parse_firewater_data(self, data: bytes) -> None:
+        """解析Firewater协议数据
+        
+        Firewater协议格式：
+        - samples:%f, %f, %f, %f\n
+        Args:
+            data: 原始字节数据
+        """
+        try:
+            # 将新数据添加到文本缓冲区
+            self.text_buffer.extend(data)
+            parse_error_detected = False
+
+            while True:
+                newline_pos = self.text_buffer.find(b'\n')
+                if newline_pos == -1:
+                    break
+
+                line_bytes = self.text_buffer[:newline_pos]
+                # 丢弃当前行（包含换行符）
+                self.text_buffer = self.text_buffer[newline_pos + 1:]
+
+                if not line_bytes:
+                    continue
+
+                # 去掉可能存在的回车符
+                if line_bytes.endswith(b'\r'):
+                    line_bytes = line_bytes[:-1]
+
+                try:
+                    text_data = line_bytes.decode('utf-8', errors='ignore').strip()
+                    if not text_data:
+                        continue
+                    
+                    # 解析Firewater格式
+                    # 支持 samples:%f, %f 或 %f, %f 格式
+                    if text_data.startswith('samples:'):
+                        # 去掉 samples: 前缀
+                        data_part = text_data[8:].strip()
+                    else:
+                        data_part = text_data.strip()
+                    
+                    # 分割并解析浮点数
+                    import re
+                    # 匹配所有浮点数
+                    float_pattern = r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?'
+                    float_strings = re.findall(float_pattern, data_part)
+                    
+                    if not float_strings:
+                        parse_error_detected = True
+                        continue
+                    
+                    # 转换为浮点数
+                    values = [float(f) for f in float_strings]
+                    
+                    # 计算时间戳
+                    if self.justfloat_mode == 'with_timestamp':
+                        # 带时间戳模式：使用当前时间
+                        import time
+                        timestamp = time.time()
+                    else:
+                        # 无时间戳模式：使用Δt计算时间戳
+                        timestamp_ms = self.data_point_counter * self.delta_t
+                        timestamp = timestamp_ms / 1000.0
+                        self.data_point_counter += 1
+                    
+                    header = ''
+                    result = (header, timestamp) + tuple(values)
+                    self.parsed_frames.append(result)
+                    self.parsed_frame_count += 1
+                    
+                except Exception as e:
+                    print(f"Firewater数据解析失败: {e}, 文本: {text_data}")
+                    parse_error_detected = True
+                    continue
+
+            # 对Firewater协议：若本批出现解析失败且未产出有效帧，补一个FORMAT_ERROR帧
+            if parse_error_detected and not self.parsed_frames:
+                import time
+                self.parsed_frames.append(('FORMAT_ERROR', time.time()))
+        except Exception as e:
+            print(f"Firewater数据处理失败: {e}")
+            # 返回错误标识，用于触发数据格式不匹配状态
+            import time
+            self.parsed_frames.append(('FORMAT_ERROR', time.time()))
+    
     def _parse_text_data(self, text: str) -> Tuple[float, ...]:
         """解析文本格式数据
         
@@ -455,7 +552,7 @@ class SerialDataSource(DataSource):
         """获取当前协议类型
         
         Returns:
-            协议类型：'text', 'justfloat', 'rawdata'
+            协议类型：'text', 'justfloat', 'firewater', 'rawdata'
         """
         return self.protocol
 

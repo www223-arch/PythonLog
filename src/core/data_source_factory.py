@@ -55,11 +55,11 @@ def build_data_source(source_type: str, config: Dict[str, Any]) -> Tuple[Any, st
             data_source = create_serial_source(serial_port, baudrate, protocol, header)
             return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: 文本协议，数据校验头: {header}", None
 
-        if protocol == 'justfloat':
+        if protocol in ['justfloat', 'firewater']:
             justfloat_mode = config["justfloat_mode"]
             delta_t = config["delta_t"]
             data_source = create_serial_source(serial_port, baudrate, protocol, '', justfloat_mode, delta_t)
-            return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: Justfloat", justfloat_mode
+            return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: {protocol.capitalize()}", justfloat_mode
 
         data_source = create_serial_source(serial_port, baudrate, 'rawdata', '')
         return data_source, f"已连接到串口 {serial_port} @ {baudrate}bps，协议: Rawdata", None

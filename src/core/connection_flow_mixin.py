@@ -146,14 +146,15 @@ class ConnectionFlowMixin:
                 }
                 return build_data_source(source_type, config)
 
-            if protocol_text == 'Justfloat':
+            if protocol_text in ['Justfloat', 'Firewater']:
                 justfloat_mode_text = self.justfloat_mode_combo.currentText()
                 justfloat_mode = 'with_timestamp' if justfloat_mode_text == '带时间戳' else 'without_timestamp'
                 delta_t = float(self.delta_t_edit.text()) if self.delta_t_edit.text() else 1.0
+                protocol = 'justfloat' if protocol_text == 'Justfloat' else 'firewater'
                 config = {
                     "serial_port": serial_port,
                     "baudrate": baudrate,
-                    "protocol": 'justfloat',
+                    "protocol": protocol,
                     "justfloat_mode": justfloat_mode,
                     "delta_t": delta_t,
                 }
@@ -328,7 +329,7 @@ class ConnectionFlowMixin:
         if protocol_text == "文本协议":
             self.header_group.setVisible(True)
             self.justfloat_group.setVisible(False)
-        elif protocol_text == "Justfloat":
+        elif protocol_text in ["Justfloat", "Firewater"]:
             self.header_group.setVisible(False)
             self.justfloat_group.setVisible(True)
             self.on_justfloat_mode_changed(self.justfloat_mode_combo.currentText())
