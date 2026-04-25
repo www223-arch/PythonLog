@@ -196,6 +196,7 @@
 - 已实现时域"跟随最新"图标开关：开启时自动调整一次视图，随后用户可自由缩放。
 - 已实现波特图分析功能：位于可视化层，支持选择输入/输出通道，通过FFT计算频率响应并显示幅值(dB)和相位(度)曲线，采样率自动适配（有Δt配置时优先使用，无则从时间戳估算）。
 - 已支持 Firewater 协议：串口文本协议，支持 samples:%f, %f 或 %f, %f 格式，与 Justfloat 共享时间戳模式配置。
+- 已新增扫频信号测试工具：tools/sweep_sender.py，支持 UDP/TCP 扫频信号发送，用于测试波特图功能。
 - 已完成主窗口拆分：连接流程、原始数据、通道菜单、Dock 行为均已迁入 core mixin。
 - 已完成 DataSourceManager 第二阶段分层重构：新增统一帧接口 read_frame()（header/timestamp/channels/meta），read_data() 作为兼容适配层保留旧行为。
 - 已完成第三阶段主路径切换：DataReceiveThread 改为消费 read_frame()，UI 侧兼容统一帧与旧扁平字典。
