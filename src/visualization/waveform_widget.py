@@ -5,7 +5,7 @@
 """
 
 import pyqtgraph as pg
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox, QHBoxLayout, QToolButton, QStyle
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox, QHBoxLayout, QToolButton, QStyle, QLineEdit
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 from typing import Dict, List, Tuple, Optional
@@ -295,6 +295,16 @@ class WaveformWidget(QWidget):
         bode_control_layout.addWidget(self.input_channel_combo)
         bode_control_layout.addWidget(QLabel("输出:"))
         bode_control_layout.addWidget(self.output_channel_combo)
+        bode_control_layout.addWidget(QLabel("F起始:"))
+        self.bode_f_start_input = QLineEdit("0.1")
+        self.bode_f_start_input.setMaximumWidth(60)
+        self.bode_f_start_input.setToolTip("扫频起始频率 (Hz)")
+        bode_control_layout.addWidget(self.bode_f_start_input)
+        bode_control_layout.addWidget(QLabel("F终止:"))
+        self.bode_f_end_input = QLineEdit("10")
+        self.bode_f_end_input.setMaximumWidth(60)
+        self.bode_f_end_input.setToolTip("扫频终止频率 (Hz)")
+        bode_control_layout.addWidget(self.bode_f_end_input)
         bode_control_layout.addWidget(self.bode_btn)
         bode_control_layout.addStretch()
         
@@ -1506,7 +1516,7 @@ class WaveformWidget(QWidget):
             print(f"显示全部频域分析失败: {e}")
     
     def perform_bode_analysis(self) -> None:
-        """执行波特图分析"""
+        """执行波特图分析（支持扫频信号的分段分析）"""
         input_channel_name = self.input_channel_combo.currentText()
         output_channel_name = self.output_channel_combo.currentText()
         
@@ -1523,43 +1533,67 @@ class WaveformWidget(QWidget):
         
         input_data = input_channel['data']
         output_data = output_channel['data']
+        input_x = input_channel['x_data']
+        output_x = output_channel['x_data']
         
         if len(input_data) < 10 or len(output_data) < 10:
             self.bode_info_label.setText("数据点太少，无法进行波特图分析")
             return
         
         try:
-            # 获取采样率
-            x_data = input_channel['x_data'] if input_channel['x_data'] else output_channel['x_data']
-            actual_sample_rate = self._get_effective_sample_rate(x_data)
+            # 数据同步：基于时间戳对齐数据
+            if input_x and output_x:
+                input_start = input_x[0]
+                input_end = input_x[-1]
+                output_start = output_x[0]
+                output_end = output_x[-1]
+                
+                start_time = max(input_start, output_start)
+                end_time = min(input_end, output_end)
+                
+                if start_time < end_time:
+                    input_mask = [x >= start_time and x <= end_time for x in input_x]
+                    output_mask = [x >= start_time and x <= end_time for x in output_x]
+                    
+                    input_data = [d for d, m in zip(input_data, input_mask) if m]
+                    output_data = [d for d, m in zip(output_data, output_mask) if m]
+                    input_x = [x for x, m in zip(input_x, input_mask) if m]
             
-            # 确保输入和输出数据长度相同
             min_length = min(len(input_data), len(output_data))
-            input_data = input_data[-min_length:]
-            output_data = output_data[-min_length:]
+            input_data = list(input_data[-min_length:])
+            output_data = list(output_data[-min_length:])
+            input_x = list(input_x[-min_length:]) if input_x else []
             
-            # 执行FFT
-            n = min_length
+            # 获取采样率
+            actual_sample_rate = self._get_effective_sample_rate(input_x) if input_x else self.sample_rate
+            
+            # 判断是扫频信号还是稳态信号
+            n = len(input_data)
+            
+            # 执行FFT分析整个信号
             input_fft = fft(input_data)
-            output_fft = fft(output_data)
             fft_freq = fftfreq(n, d=1.0/actual_sample_rate)
             
-            # 只取正频率部分
-            positive_freq_idx = fft_freq >= 0
-            freq = fft_freq[positive_freq_idx]
-            input_fft = input_fft[positive_freq_idx]
-            output_fft = output_fft[positive_freq_idx]
+            # 只取正频率部分，跳过直流分量
+            positive_freq_idx = (fft_freq > 0) & (fft_freq <= actual_sample_rate/2)
+            freq_all = fft_freq[positive_freq_idx]
+            input_fft_pos = np.abs(input_fft[positive_freq_idx])
             
-            # 计算频率响应（输出/输入）
-            # 避免除以零
-            epsilon = 1e-10
-            frequency_response = output_fft / (input_fft + epsilon)
+            # 检查输入信号是否是扫频信号（能量是否分散）
+            max_idx = np.argmax(input_fft_pos)
+            peak_ratio = input_fft_pos[max_idx] / (np.sum(input_fft_pos) + 1e-10)
             
-            # 计算幅值响应（dB）
-            magnitude = 20 * np.log10(np.abs(frequency_response) + epsilon)
-            
-            # 计算相位响应（度）
-            phase = np.angle(frequency_response, deg=True)
+            # 如果主峰值占比小于30%，认为是扫频信号
+            if peak_ratio < 0.3 and n > 500:
+                # 使用分段分析（更适合扫频信号）
+                freq, magnitude, phase = self._sweep_bode_analysis(
+                    input_data, output_data, input_x, actual_sample_rate
+                )
+            else:
+                # 使用传统FFT分析（适合稳态信号）
+                freq, magnitude, phase = self._fft_bode_analysis(
+                    input_data, output_data, actual_sample_rate
+                )
             
             # 清除旧的波特图曲线
             self.bode_plot_widget.clear()
@@ -1575,12 +1609,20 @@ class WaveformWidget(QWidget):
             # 添加图例
             self.bode_plot_widget.addLegend()
             
+            # 获取扫频参数用于显示
+            try:
+                disp_f_start = float(self.bode_f_start_input.text())
+                disp_f_end = float(self.bode_f_end_input.text())
+            except ValueError:
+                disp_f_start, disp_f_end = 0.1, 10.0
+
             # 更新波特图信息
             info_text = (f"输入通道: {input_channel_name}\n"
                         f"输出通道: {output_channel_name}\n"
+                        f"扫频范围: {disp_f_start:.1f} ~ {disp_f_end:.1f} Hz\n"
                         f"数据点数: {n}\n"
                         f"采样率: {actual_sample_rate:.1f} Hz\n"
-                        f"频率范围: 0 ~ {freq[-1]:.2f} Hz")
+                        f"频率范围: {freq[0]:.3f} ~ {freq[-1]:.2f} Hz")
             self.bode_info_label.setText(info_text)
             
             print(f"波特图分析完成: 输入={input_channel_name}, 输出={output_channel_name}")
@@ -1588,3 +1630,132 @@ class WaveformWidget(QWidget):
         except Exception as e:
             self.bode_info_label.setText(f"波特图分析失败: {str(e)}")
             print(f"波特图分析失败: {e}")
+
+    def _sweep_bode_analysis(self, input_data: list, output_data: list,
+                            input_x: list, sample_rate: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """对扫频信号进行正交解调分析（锁相放大器原理）
+
+        核心原理：
+        1. 接收端知道发送端的f_start, f_end，用相同公式计算参考相位phi(t)
+        2. 用sin(phi)和cos(phi)做正交相关运算，提取同相(I)和正交(Q)分量
+        3. A = 2*sqrt(I^2 + Q^2), phase = atan2(-Q, I)
+
+        自适应窗口：低频窗口大（多周期），高频窗口小
+        """
+        try:
+            f_start = float(self.bode_f_start_input.text())
+            f_end = float(self.bode_f_end_input.text())
+        except ValueError:
+            f_start, f_end = 0.1, 10.0
+
+        n = len(input_data)
+        input_x_arr = np.array(input_x) if input_x else np.arange(n) / sample_rate
+
+        if len(input_x_arr) < 2:
+            return np.array([]), np.array([]), np.array([])
+
+        freq_points = []
+        magnitude_points = []
+        phase_points = []
+
+        decades = np.log10(f_end / f_start)
+        duration_total = input_x_arr[-1] - input_x_arr[0]
+
+        # 确保扫频时间大于0
+        if duration_total <= 0:
+            duration_total = 1.0
+
+        # 按频率点分析，而不是按时间窗口
+        num_freq_points = 50
+        freq_array = np.logspace(np.log10(f_start), np.log10(f_end), num_freq_points)
+
+        for current_freq in freq_array:
+            # 计算该频率对应的时间点
+            t_at_freq = duration_total * (np.log10(current_freq / f_start) / decades)
+            
+            # 找到最接近的时间点的索引
+            idx = np.argmin(np.abs(input_x_arr - t_at_freq))
+            
+            # 计算窗口大小（基于当前频率）
+            samples_per_cycle = sample_rate / current_freq
+            window_size = max(20, min(int(samples_per_cycle * 3), 500))
+            
+            start_idx = max(0, idx - window_size//2)
+            end_idx = min(n, start_idx + window_size)
+            
+            if end_idx - start_idx < 20:
+                continue
+            
+            window_input = np.array(input_data[start_idx:end_idx])
+            window_output = np.array(output_data[start_idx:end_idx])
+            window_t = input_x_arr[start_idx:end_idx]
+
+            # 计算参考相位（和发送端完全相同的公式）
+            global_decades = (window_t - input_x_arr[0]) / duration_total * decades
+            ref_phase = (2 * np.pi * f_start * duration_total / (np.log(10) * decades + 1e-10)) * \
+                        (np.power(10, global_decades) - 1)
+            
+            ref_sin = np.sin(ref_phase)
+            ref_cos = np.cos(ref_phase)
+
+            # 计算输入信号的I/Q分量
+            I_in = np.sum(window_input * ref_sin)
+            Q_in = np.sum(window_input * ref_cos)
+            A_in = 2 * np.sqrt(I_in**2 + Q_in**2) / len(window_input) + 1e-10
+
+            # 计算输出信号的I/Q分量
+            I_out = np.sum(window_output * ref_sin)
+            Q_out = np.sum(window_output * ref_cos)
+            A_out = 2 * np.sqrt(I_out**2 + Q_out**2) / len(window_output) + 1e-10
+
+            # 计算相位差
+            phase_in = np.arctan2(-Q_in, I_in)
+            phase_out = np.arctan2(-Q_out, I_out)
+            phase_diff = phase_out - phase_in
+
+            # 相位归一化到 [-π, π]
+            if phase_diff > np.pi:
+                phase_diff -= 2 * np.pi
+            elif phase_diff < -np.pi:
+                phase_diff += 2 * np.pi
+
+            # 计算幅值比（dB）
+            mag_ratio = A_out / A_in
+            mag_db = 20 * np.log10(mag_ratio + 1e-10)
+
+            freq_points.append(current_freq)
+            magnitude_points.append(mag_db)
+            phase_points.append(np.degrees(phase_diff))
+
+        # 排序并相位展开
+        if freq_points:
+            sorted_idx = np.argsort(freq_points)
+            freq_points = np.array(freq_points)[sorted_idx]
+            magnitude_points = np.array(magnitude_points)[sorted_idx]
+            phase_points = np.array(phase_points)[sorted_idx]
+            phase_points = np.unwrap(phase_points * np.pi / 180) * 180 / np.pi
+
+        return np.array(freq_points), np.array(magnitude_points), np.array(phase_points)
+
+    def _fft_bode_analysis(self, input_data: list, output_data: list, 
+                          sample_rate: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """传统FFT波特图分析（适合稳态信号）"""
+        n = len(input_data)
+        
+        input_fft = fft(input_data)
+        output_fft = fft(output_data)
+        fft_freq = fftfreq(n, d=1.0/sample_rate)
+        
+        positive_freq_idx = (fft_freq > 0) & (fft_freq <= sample_rate/2)
+        freq = fft_freq[positive_freq_idx]
+        input_fft = input_fft[positive_freq_idx]
+        output_fft = output_fft[positive_freq_idx]
+        
+        epsilon = 1e-10
+        frequency_response = output_fft / (input_fft + epsilon)
+        
+        magnitude = 20 * np.log10(np.abs(frequency_response) + epsilon)
+        phase = np.angle(frequency_response, deg=True)
+        phase = np.unwrap(phase * np.pi / 180) * 180 / np.pi
+        
+        return freq, magnitude, phase

@@ -305,7 +305,7 @@ QDockWidget::float-button {
         file_path_layout.addWidget(self.file_browse_btn)
 
         self.file_protocol_combo = QComboBox()
-        self.file_protocol_combo.addItems(["文本协议", "CSV", "Justfloat", "Rawdata"])
+        self.file_protocol_combo.addItems(["文本协议", "CSV", "Justfloat", "Firewater", "Rawdata"])
         self.file_protocol_combo.setCurrentText("文本协议")
         self.file_protocol_combo.currentTextChanged.connect(self.on_file_protocol_changed)
 

@@ -130,8 +130,14 @@ class DataSourceManager:
 
         # 解析基础字段
         header = str(data[0])
-        timestamp_seconds = float(data[1])
-        timestamp_ms = timestamp_seconds * 1000.0
+        timestamp_raw = float(data[1])
+        # 自动检测时间戳单位：
+        # - 扫频脚本发送毫秒时间戳（如 0, 100, 200, ...，或 1000, 2000, 3000, ...）
+
+        #if timestamp_raw > 100000:
+        # timestamp_ms = timestamp_raw * 1000.0
+        #else:
+        timestamp_ms = timestamp_raw
 
         # 更新最后接收数据时间（包括校验错误）
         self.last_data_time = timestamp_ms

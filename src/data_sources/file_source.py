@@ -5,6 +5,7 @@
 - text
 - csv（DataSaver导出格式）
 - justfloat（with_timestamp / without_timestamp）
+- firewater（with_timestamp / without_timestamp）
 - rawdata
 """
 
@@ -111,10 +112,17 @@ class FileDataSource(SerialDataSource):
             # 首行必须是DataSaver导出的表头：时间戳 + 通道名...
             if not self.csv_channel_names:
                 header0 = row[0]
-                if header0 not in ('时间戳', 'timestamp', 'Timestamp'):
+                # 支持多种常见的时间戳表头格式
+                timestamp_headers = ('时间戳', 'timestamp', 'Timestamp', '???', 'time', 'Time', 't', '')
+                if header0 not in timestamp_headers:
                     return ('FORMAT_ERROR', time.time())
 
-                channel_names = [name for name in row[1:] if name]
+                # 如果表头为空（第一列为时间戳但无标题），则所有列都是通道
+                if header0 == '':
+                    channel_names = [name for name in row if name]
+                else:
+                    channel_names = [name for name in row[1:] if name]
+
                 if not channel_names:
                     return ('FORMAT_ERROR', time.time())
 
@@ -126,10 +134,8 @@ class FileDataSource(SerialDataSource):
                 return ('FORMAT_ERROR', time.time())
 
             try:
-                # DataSaver导出的CSV时间戳单位为毫秒；
-                # FileDataSource对外需返回“秒”，由Manager统一转回毫秒。
-                timestamp_ms = float(row[0])
-                timestamp = timestamp_ms / 1000.0
+                # CSV时间戳单位为毫秒，直接使用保持与其他协议统一
+                timestamp = float(row[0])
                 values = [float(row[i + 1]) for i in range(len(self.csv_channel_names))]
             except (TypeError, ValueError):
                 return ('FORMAT_ERROR', time.time())
@@ -195,6 +201,8 @@ class FileDataSource(SerialDataSource):
                 self._parse_text_buffer_data(chunk)
             elif self.protocol == 'justfloat':
                 self._parse_justfloat_data(chunk)
+            elif self.protocol == 'firewater':
+                self._parse_firewater_data(chunk)
             else:  # rawdata
                 return ('', time.time())
 
